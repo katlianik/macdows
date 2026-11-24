@@ -1,5 +1,9 @@
 # Macdows release notes
 
+## 1.35 build 76 · 2026-11-24
+
+- The switcher tracks the card under a moving pointer. Command or Control with W closes the selected window. With Q, Finder closes its windows and other apps quit. The open list updates as Finder windows close.
+
 ## 1.35 build 75 · 2026-11-24
 
 - Choose **Settings…** from the menu bar to open one window. Its five panes are Switcher, Windows, Keyboard, Apps & Finder, and General. Settings stay visible when unavailable.

@@ -288,7 +288,9 @@ static SwitcherCopySpacesForWindowsFn switcherCopySpacesForWindows;
 static SwitcherCopyManagedDisplaySpacesFn switcherCopyManagedDisplaySpaces;
 static BOOL switcherSkyLightLoaded;
 static NSArray<NSRunningApplication *> *localSwitcherApps;
-static NSMutableSet<NSNumber *> *localSwitcherSuppressedPIDs;
+static BOOL localSwitcherOmitEmptyFinder;
+// Observers live only while the switcher session that requested the close is open.
+static NSMutableArray *localSwitcherCloseObservers;
 static NSMutableSet<NSNumber *> *localSwitcherSuppressedWindowIDs;
 static NSArray<NSNumber *> *localSwitcherItemWindowIDs;
 static NSArray<NSString *> *localSwitcherItemTitles;
@@ -299,6 +301,9 @@ static NSInteger localSwitcherSelection, localSwitcherVisibleStart;
 static NSUInteger localSwitcherPanelGeneration;
 static NSUInteger localSwitcherPreviewGeneration;
 static BOOL localSwitcherActive, localSwitcherTabHeld, localSwitcherQHeld, localSwitcherWHeld;
+static NSUInteger localSwitcherSessionID;
+static BOOL localSwitcherActionPending;
+static NSPoint localSwitcherLastPointer;
 static NSPanel *localSwitcherPanel;
 static NSStackView *localSwitcherStack;
 static NSView *localSwitcherContentView;
@@ -353,8 +358,13 @@ static BOOL switcherWindowsOnCurrentSpace(NSArray<NSNumber *> *windowIDs, NSSet<
 
 static BOOL includeInLocalSwitcher(NSString *bundleID, BOOL hasWindow, BOOL hasWindowOnCurrentSpace) {
     if ([bundleID isEqual:NSBundle.mainBundle.bundleIdentifier]) return NO;
-    if ([bundleID isEqual:@"com.apple.finder"] && localSwitcherHideFinder && !hasWindow) return NO;
+    if ([bundleID isEqual:@"com.apple.finder"] && (localSwitcherHideFinder || localSwitcherOmitEmptyFinder) && !hasWindow) return NO;
     return localSwitcherCurrentOnly ? hasWindowOnCurrentSpace : YES;
+}
+
+static BOOL needsSwitcherAXWindows(NSString *bundleID, NSUInteger candidateCount) {
+    if ([bundleID isEqual:@"com.apple.finder"]) return candidateCount > 0;
+    return localSwitcherEveryWindow && candidateCount > 1;
 }
 
 static NSArray<NSNumber *> *realSwitcherWindowIDs(NSRunningApplication *app, NSArray<NSNumber *> *candidateIDs,
@@ -393,7 +403,6 @@ static NSArray<NSRunningApplication *> *buildLocalSwitcherApps(void) {
     NSArray *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll,kCGNullWindowID)) ?: @[];
     NSMutableDictionary<NSNumber *,NSMutableArray<NSNumber *> *> *idsByPID = [NSMutableDictionary dictionary];
     NSMutableDictionary<NSNumber *,NSString *> *titlesByWindowID = [NSMutableDictionary dictionary];
-    NSMutableSet<NSNumber *> *onscreenPIDs = [NSMutableSet set];
     NSMutableSet<NSNumber *> *onscreenWindowIDs = [NSMutableSet set];
     NSMutableArray<NSNumber *> *windowPIDOrder = [NSMutableArray array];
     for (NSDictionary *window in windows) {
@@ -407,45 +416,53 @@ static NSArray<NSRunningApplication *> *buildLocalSwitcherApps(void) {
         if (title.length) titlesByWindowID[windowID] = title;
         if (![windowPIDOrder containsObject:pid]) [windowPIDOrder addObject:pid];
         if ([window[(id)kCGWindowIsOnscreen] boolValue]) {
-            [onscreenPIDs addObject:pid];
             [onscreenWindowIDs addObject:windowID];
         }
     }
     NSSet *currentSpaces = localSwitcherCurrentOnly ? currentSwitcherSpaces() : nil;
     NSArray<NSRunningApplication *> *runningApps = NSWorkspace.sharedWorkspace.runningApplications;
     NSMutableDictionary<NSNumber *,NSArray<NSNumber *> *> *realIDsByPID = [NSMutableDictionary dictionary];
-    if (localSwitcherEveryWindow) {
-        dispatch_apply(runningApps.count,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^(size_t index) {
-            NSRunningApplication *app = runningApps[index];
-            if (app.terminated || app.activationPolicy != NSApplicationActivationPolicyRegular) return;
-            NSNumber *pid = @(app.processIdentifier);
-            NSArray *candidateIDs = idsByPID[pid];
-            // A single candidate cannot be a duplicate. Accessibility is only
-            // needed for multi-window apps, where Window Server also exposes
-            // helper surfaces belonging to the same document window.
-            if (candidateIDs.count < 2) return;
-            NSArray *realIDs = realSwitcherWindowIDs(app,candidateIDs,titlesByWindowID);
-            if (realIDs) @synchronized(realIDsByPID) { realIDsByPID[pid] = realIDs; }
-        });
-    }
+    // Finder retains layer-zero desktop surfaces after the last browser closes.
+    // Even its app icon must be backed by an actual AX window when filtering.
+    NSArray<NSRunningApplication *> *appsToVerify = localSwitcherEveryWindow ? runningApps :
+        [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.finder"];
+    dispatch_apply(appsToVerify.count,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^(size_t index) {
+        NSRunningApplication *app = appsToVerify[index];
+        if (app.terminated || app.activationPolicy != NSApplicationActivationPolicyRegular) return;
+        NSNumber *pid = @(app.processIdentifier);
+        NSArray *candidateIDs = idsByPID[pid];
+        if (!needsSwitcherAXWindows(app.bundleIdentifier,candidateIDs.count)) return;
+        NSArray *realIDs = realSwitcherWindowIDs(app,candidateIDs,titlesByWindowID);
+        if (realIDs) @synchronized(realIDsByPID) { realIDsByPID[pid] = realIDs; }
+    });
     NSMutableArray<NSRunningApplication *> *eligible = [NSMutableArray array];
     NSMutableDictionary<NSNumber *,NSArray<NSNumber *> *> *eligibleWindowIDsByPID = [NSMutableDictionary dictionary];
     for (NSRunningApplication *app in runningApps) {
         if (app.terminated || app.activationPolicy != NSApplicationActivationPolicyRegular) continue;
         NSNumber *pid = @(app.processIdentifier);
-        if ([localSwitcherSuppressedPIDs containsObject:pid]) continue;
         NSArray *windowIDs = idsByPID[pid] ?: @[];
         NSArray *realWindowIDs = realIDsByPID[pid];
         if (realWindowIDs) windowIDs = realWindowIDs;
-        BOOL onCurrent = localSwitcherCurrentOnly ? switcherWindowsOnCurrentSpace(windowIDs,currentSpaces,[onscreenPIDs containsObject:pid]) : NO;
-        if (!includeInLocalSwitcher(app.bundleIdentifier,windowIDs.count > 0,onCurrent)) continue;
-        [eligible addObject:app];
+        else if (windowIDs.count && [app.bundleIdentifier isEqual:@"com.apple.finder"]) {
+            // AX can be briefly unavailable while Finder handles a close. Keep
+            // only window IDs already verified in this session; never promote
+            // an unverified desktop surface to a browser window.
+            NSMutableArray *previous = [NSMutableArray array];
+            for (NSUInteger i=0; i<localSwitcherApps.count; i++) {
+                NSNumber *knownID = localSwitcherItemWindowIDs[i];
+                if (localSwitcherApps[i].processIdentifier == app.processIdentifier && [windowIDs containsObject:knownID])
+                    [previous addObject:knownID];
+            }
+            windowIDs = previous;
+        }
         NSMutableArray<NSNumber *> *eligibleWindowIDs = [NSMutableArray array];
         for (NSNumber *windowID in windowIDs) {
             BOOL windowOnCurrent = !localSwitcherCurrentOnly ||
                 switcherWindowsOnCurrentSpace(@[windowID],currentSpaces,[onscreenWindowIDs containsObject:windowID]);
             if (windowOnCurrent) [eligibleWindowIDs addObject:windowID];
         }
+        if (!includeInLocalSwitcher(app.bundleIdentifier,windowIDs.count > 0,eligibleWindowIDs.count > 0)) continue;
+        [eligible addObject:app];
         eligibleWindowIDsByPID[pid] = eligibleWindowIDs;
     }
     [eligible sortUsingComparator:^NSComparisonResult(NSRunningApplication *a, NSRunningApplication *b) {
@@ -488,6 +505,8 @@ static NSArray<NSRunningApplication *> *buildLocalSwitcherApps(void) {
     localSwitcherItemTitles = itemTitles;
     return items;
 }
+
+static NSArray<NSRunningApplication *> *(*readLocalSwitcherApps)(void) = buildLocalSwitcherApps;
 
 static NSInteger nextLocalSwitcherIndex(NSUInteger count, NSInteger current, BOOL reverse, BOOL firstStep) {
     if (!count) return NSNotFound;
@@ -544,6 +563,42 @@ static void updateLocalSwitcherCellSelection(NSView *cell, BOOL selected) {
     cell.layer.borderWidth = selected && localSwitcherPreviews ? 3 : 0;
 }
 
+static void selectLocalSwitcherAtPoint(NSPoint screenPoint) {
+    if (!localSwitcherActive || !localSwitcherPanel.visible || localSwitcherRenderedStart == NSNotFound ||
+        NSEqualPoints(screenPoint, localSwitcherLastPointer)) return;
+    localSwitcherLastPointer = screenPoint;
+    NSPoint windowPoint = [localSwitcherPanel convertPointFromScreen:screenPoint];
+    NSArray<NSView *> *cells = localSwitcherStack.arrangedSubviews;
+    for (NSUInteger offset = 0; offset < cells.count; offset++) {
+        NSView *cell = cells[offset];
+        if (!NSPointInRect([cell convertPoint:windowPoint fromView:nil], cell.bounds)) continue;
+        NSInteger index = localSwitcherRenderedStart + (NSInteger)offset;
+        if (index >= (NSInteger)localSwitcherApps.count || index == localSwitcherSelection) return;
+        localSwitcherSelection = index;
+        for (NSView *visibleCell in cells) updateLocalSwitcherCellSelection(visibleCell, visibleCell == cell);
+        return;
+    }
+}
+
+@interface MacdowsSwitcherStack : NSStackView
+@end
+
+@implementation MacdowsSwitcherStack
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        NSTrackingAreaOptions options = NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited |
+                                        NSTrackingActiveAlways | NSTrackingInVisibleRect;
+        [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:options owner:self userInfo:nil]];
+    }
+    return self;
+}
+- (void)mouseMoved:(NSEvent *)event {
+    selectLocalSwitcherAtPoint([event.window convertPointToScreen:event.locationInWindow]);
+}
+- (void)mouseEntered:(NSEvent *)event { [self mouseMoved:event]; }
+@end
+
 static NSView *localSwitcherCell(NSRunningApplication *app, NSNumber *windowID, NSString *title, BOOL selected) {
     CGFloat width = localSwitcherPreviews ? 220 : 84, height = localSwitcherPreviews ? 150 : 94;
     NSView *cell = [[NSView alloc] initWithFrame:NSMakeRect(0,0,width,height)];
@@ -590,6 +645,7 @@ static void renderLocalSwitcher(void) {
         localSwitcherPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,120,118)
             styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
         localSwitcherPanel.opaque = NO;
+        localSwitcherPanel.acceptsMouseMovedEvents = YES;
         localSwitcherPanel.backgroundColor = NSColor.clearColor;
         localSwitcherPanel.hasShadow = YES;
         localSwitcherPanel.level = NSStatusWindowLevel;
@@ -617,7 +673,7 @@ static void renderLocalSwitcher(void) {
             localSwitcherPanel.contentView = background;
             localSwitcherContentView = background;
         }
-        localSwitcherStack = [[NSStackView alloc] initWithFrame:NSMakeRect(12,12,84,94)];
+        localSwitcherStack = [[MacdowsSwitcherStack alloc] initWithFrame:NSMakeRect(12,12,84,94)];
         localSwitcherStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
         localSwitcherStack.spacing = 8;
         localSwitcherStack.distribution = NSStackViewDistributionFillEqually;
@@ -676,6 +732,7 @@ static void renderLocalSwitcher(void) {
     localSwitcherRightOverflow.frame = NSMakeRect(width-41,(height-20)/2,38,20);
     NSRect frame = localSwitcherPanel.frame, area = screen.visibleFrame;
     [localSwitcherPanel setFrameOrigin:NSMakePoint(NSMidX(area)-NSWidth(frame)/2,NSMidY(area)-NSHeight(frame)/2)];
+    if (!localSwitcherPanel.visible) localSwitcherLastPointer = NSEvent.mouseLocation;
     [localSwitcherPanel orderFrontRegardless];
     localSwitcherPreviewGeneration++;
     NSInteger previewStart = MAX(0,start-2);
@@ -686,7 +743,8 @@ static void renderLocalSwitcher(void) {
 static void stepLocalSwitcher(BOOL reverse) {
     BOOL first = !localSwitcherActive;
     if (first) {
-        localSwitcherApps = buildLocalSwitcherApps();
+        localSwitcherSessionID++;
+        localSwitcherApps = readLocalSwitcherApps();
         localSwitcherVisibleStart = 0;
         localSwitcherRenderedStart = NSNotFound;
         if (!localSwitcherPreviewImageCache) localSwitcherPreviewImageCache = [NSMutableDictionary dictionary];
@@ -697,6 +755,7 @@ static void stepLocalSwitcher(BOOL reverse) {
     }
     if (!localSwitcherApps.count) return;
     localSwitcherActive = YES;
+    localSwitcherLastPointer = NSEvent.mouseLocation;
     localSwitcherSelection = nextLocalSwitcherIndex(localSwitcherApps.count,localSwitcherSelection,reverse,first);
     if (first) {
         NSScreen *screen = NSScreen.mainScreen ?: NSScreen.screens.firstObject;
@@ -719,6 +778,8 @@ static void stepLocalSwitcher(BOOL reverse) {
 }
 
 static void finishLocalSwitcher(BOOL activate) {
+    if (localSwitcherActionPending) activate = NO;
+    localSwitcherActionPending = NO;
     NSRunningApplication *selected = localSwitcherActive && localSwitcherSelection >= 0 &&
         localSwitcherSelection < (NSInteger)localSwitcherApps.count ? localSwitcherApps[localSwitcherSelection] : nil;
     CGWindowID selectedWindowID = selected ? localSwitcherItemWindowIDs[localSwitcherSelection].unsignedIntValue : 0;
@@ -727,15 +788,18 @@ static void finishLocalSwitcher(BOOL activate) {
     localSwitcherPreviewGeneration++;
     localSwitcherActive = NO;
     localSwitcherTabHeld = NO;
-    localSwitcherQHeld = NO;
-    localSwitcherWHeld = NO;
     localSwitcherSelection = NSNotFound;
     localSwitcherVisibleStart = 0;
     localSwitcherRenderedStart = NSNotFound;
     localSwitcherApps = nil;
     localSwitcherItemWindowIDs = nil;
     localSwitcherItemTitles = nil;
-    [localSwitcherSuppressedPIDs removeAllObjects];
+    localSwitcherOmitEmptyFinder = NO;
+    for (id item in localSwitcherCloseObservers) {
+        AXObserverRef observer = (__bridge AXObserverRef)item;
+        CFRunLoopRemoveSource(CFRunLoopGetMain(),AXObserverGetRunLoopSource(observer),kCFRunLoopCommonModes);
+    }
+    [localSwitcherCloseObservers removeAllObjects];
     [localSwitcherSuppressedWindowIDs removeAllObjects];
     if (activate && selected && !selected.terminated) focusLocalSwitcherWindow(selected,selectedWindowID);
 }
@@ -748,15 +812,24 @@ static BOOL localSwitcherChord(CGEventFlags flags) {
 
 static void reloadLocalSwitcher(pid_t preferredPID, CGWindowID preferredWindowID, NSInteger fallbackIndex) {
     if (!localSwitcherActive) return;
-    NSArray<NSRunningApplication *> *rebuilt = buildLocalSwitcherApps();
+    NSArray *previousApps = localSwitcherApps;
+    NSArray *previousWindowIDs = localSwitcherItemWindowIDs;
+    NSArray *previousTitles = localSwitcherItemTitles;
+    NSInteger previousSelection = localSwitcherSelection;
+    NSArray<NSRunningApplication *> *rebuilt = readLocalSwitcherApps();
     if (!rebuilt.count) { finishLocalSwitcher(NO); return; }
     localSwitcherApps = rebuilt;
     NSInteger found = NSNotFound;
     for (NSInteger index=0; index<(NSInteger)rebuilt.count; index++) {
-        if (preferredWindowID && localSwitcherItemWindowIDs[index].unsignedIntValue == preferredWindowID) { found = index; break; }
-        if (!preferredWindowID && rebuilt[index].processIdentifier == preferredPID) { found = index; break; }
+        if (rebuilt[index].processIdentifier != preferredPID) continue;
+        if (!localSwitcherEveryWindow || !preferredWindowID || localSwitcherItemWindowIDs[index].unsignedIntValue == preferredWindowID) {
+            found = index;
+            break;
+        }
     }
     localSwitcherSelection = found == NSNotFound ? MIN(fallbackIndex,(NSInteger)rebuilt.count-1) : found;
+    if (previousSelection == localSwitcherSelection && [previousApps isEqualToArray:rebuilt] &&
+        [previousWindowIDs isEqualToArray:localSwitcherItemWindowIDs] && [previousTitles isEqualToArray:localSwitcherItemTitles]) return;
     localSwitcherRenderedStart = NSNotFound;
     renderLocalSwitcher();
 }
@@ -770,13 +843,11 @@ static void reloadLocalSwitcherPreservingSelection(void) {
 
 typedef AXError (*SwitcherAXWindowIDFn)(AXUIElementRef,CGWindowID *);
 static SwitcherAXWindowIDFn switcherAXWindowID;
-static BOOL switcherAXWindowIDLoaded;
-
 static CGWindowID localSwitcherWindowID(AXUIElementRef window) {
-    if (!switcherAXWindowIDLoaded) {
-        switcherAXWindowIDLoaded = YES;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
         switcherAXWindowID = (SwitcherAXWindowIDFn)dlsym(RTLD_DEFAULT,"_AXUIElementGetWindow");
-    }
+    });
     CGWindowID windowID = 0;
     if (switcherAXWindowID) switcherAXWindowID(window,&windowID);
     return windowID;
@@ -809,7 +880,7 @@ static BOOL localSwitcherWindowOnCurrentSpace(AXUIElementRef window, NSSet<NSNum
     return switcherWindowsOnCurrentSpace(@[@(windowID)],spaces,NO);
 }
 
-static BOOL closeLocalSwitcherWindow(NSRunningApplication *app, CGWindowID targetWindowID, BOOL *lastEligibleWindow) {
+static BOOL closeLocalSwitcherWindow(NSRunningApplication *app, CGWindowID targetWindowID) {
     AXUIElementRef application = AXUIElementCreateApplication(app.processIdentifier);
     AXUIElementSetMessagingTimeout(application,0.15);
     id focused = attribute(application,kAXFocusedWindowAttribute);
@@ -840,58 +911,78 @@ static BOOL closeLocalSwitcherWindow(NSRunningApplication *app, CGWindowID targe
             [eligibleIDs addObject:@(windowID)];
         }
     }
-    if (lastEligibleWindow) *lastEligibleWindow = eligibleButtons.count == 1;
     NSInteger targetIndex = targetWindowID ? [eligibleIDs indexOfObject:@(targetWindowID)] : 0;
     if (targetIndex == NSNotFound || targetIndex >= (NSInteger)eligibleButtons.count) return NO;
     return AXUIElementPerformAction((__bridge AXUIElementRef)eligibleButtons[targetIndex],kAXPressAction) == kAXErrorSuccess;
 }
 
-static BOOL closeAllFinderWindows(NSRunningApplication *finder) {
-    AXUIElementRef application = AXUIElementCreateApplication(finder.processIdentifier);
-    AXUIElementSetMessagingTimeout(application,0.2);
-    id windows = attribute(application,kAXWindowsAttribute);
-    CFRelease(application);
-    if (![windows isKindOfClass:NSArray.class]) return NO;
-    NSMutableSet<NSNumber *> *closedWindowIDs = [NSMutableSet set];
-    BOOL closed = NO;
-    for (id item in windows) {
-        AXUIElementRef window = (__bridge AXUIElementRef)item;
-        if (![attribute(window,kAXRoleAttribute) isEqual:(__bridge NSString *)kAXWindowRole] ||
-            ![attribute(window,kAXSubroleAttribute) isEqual:(__bridge NSString *)kAXStandardWindowSubrole]) continue;
-        CGWindowID windowID = localSwitcherWindowID(window);
-        if (windowID && [closedWindowIDs containsObject:@(windowID)]) continue;
-        if (windowID) [closedWindowIDs addObject:@(windowID)];
-        id button = attribute(window,kAXCloseButtonAttribute);
-        if (button && ![attribute((__bridge AXUIElementRef)button,kAXEnabledAttribute) isEqual:@NO] &&
-            AXUIElementPerformAction((__bridge AXUIElementRef)button,kAXPressAction) == kAXErrorSuccess) closed = YES;
-    }
-    return closed;
+static void finderSwitcherWindowDestroyed(AXObserverRef observer, AXUIElementRef element, CFStringRef name, void *context) {
+    if (!localSwitcherActive || ![localSwitcherCloseObservers containsObject:(__bridge id)observer]) return;
+    // Coalesce notifications when Q closes multiple windows in one pass.
+    static NSUInteger queuedSession;
+    NSUInteger session = localSwitcherSessionID;
+    if (queuedSession == session) return;
+    queuedSession = session;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (queuedSession == session) queuedSession = 0;
+        if (localSwitcherActive && session == localSwitcherSessionID) reloadLocalSwitcherPreservingSelection();
+    });
 }
 
-static void removeSelectedLocalSwitcherItem(void) {
-    if (localSwitcherSelection < 0 || localSwitcherSelection >= (NSInteger)localSwitcherApps.count) return;
-    NSMutableArray *remaining = [localSwitcherApps mutableCopy];
-    NSMutableArray *remainingWindowIDs = [localSwitcherItemWindowIDs mutableCopy];
-    NSMutableArray *remainingTitles = [localSwitcherItemTitles mutableCopy];
-    [remaining removeObjectAtIndex:localSwitcherSelection];
-    [remainingWindowIDs removeObjectAtIndex:localSwitcherSelection];
-    [remainingTitles removeObjectAtIndex:localSwitcherSelection];
-    localSwitcherApps = remaining;
-    localSwitcherItemWindowIDs = remainingWindowIDs;
-    localSwitcherItemTitles = remainingTitles;
-    if (!remaining.count) { finishLocalSwitcher(NO); return; }
-    localSwitcherSelection = MIN(localSwitcherSelection,(NSInteger)remaining.count-1);
-    localSwitcherRenderedStart = NSNotFound;
-    renderLocalSwitcher();
+// A timed-out AXPress can still take effect. Never retry it or forward a
+// keystroke to the foreground application. The next AX snapshot is authoritative.
+static AXObserverRef closeFinderSwitcherWindows(pid_t pid, CGWindowID targetWindowID, BOOL all) {
+    if (!all && !targetWindowID) return NULL;
+    AXUIElementRef application = AXUIElementCreateApplication(pid);
+    CFTypeRef value = NULL;
+    AXUIElementSetMessagingTimeout(application,0.4);
+    AXUIElementCopyAttributeValue(application,kAXWindowsAttribute,&value);
+    CFRelease(application);
+    NSArray *windows = CFBridgingRelease(value);
+    if (![windows isKindOfClass:NSArray.class]) return NULL;
+
+    // Resolve *all* targets first: Finder may be busy processing the first
+    // press or remove entries from its AX window list while we close the rest.
+    NSMutableSet<NSNumber *> *visited = [NSMutableSet set];
+    NSMutableArray *buttons = [NSMutableArray array];
+    AXObserverRef observer = NULL;
+    BOOL observing = NO;
+    for (id item in windows) {
+        AXUIElementRef window = (__bridge AXUIElementRef)item;
+        if (![attribute(window,kAXRoleAttribute) isEqual:(__bridge NSString *)kAXWindowRole]) continue;
+        CGWindowID windowID = localSwitcherWindowID(window);
+        if (!all && windowID != targetWindowID) continue;
+        if (windowID && [visited containsObject:@(windowID)]) continue;
+        if (windowID) [visited addObject:@(windowID)];
+        id button = attribute(window,kAXCloseButtonAttribute);
+        if (button && ![attribute((__bridge AXUIElementRef)button,kAXEnabledAttribute) isEqual:@NO]) {
+            [buttons addObject:button];
+            if (!observer) AXObserverCreate(pid,finderSwitcherWindowDestroyed,&observer);
+            if (observer && AXObserverAddNotification(observer,window,kAXUIElementDestroyedNotification,NULL) == kAXErrorSuccess)
+                observing = YES;
+        }
+        if (!all) break;
+    }
+    for (id item in buttons) {
+        AXUIElementRef button = (__bridge AXUIElementRef)item;
+        AXUIElementSetMessagingTimeout(button,0.4);
+        AXUIElementPerformAction(button,kAXPressAction);
+    }
+    if (observer && !observing) { CFRelease(observer); return NULL; }
+    return observer;
 }
+
+static AXObserverRef (*requestFinderSwitcherClose)(pid_t, CGWindowID, BOOL) = closeFinderSwitcherWindows;
 
 static void removeLocalSwitcherItemsForPID(pid_t pid) {
     if (!localSwitcherApps.count) return;
     NSMutableArray *remaining = [NSMutableArray array];
     NSMutableArray *remainingWindowIDs = [NSMutableArray array];
     NSMutableArray *remainingTitles = [NSMutableArray array];
+    NSInteger survivingSelection = NSNotFound;
     for (NSInteger index=0; index<(NSInteger)localSwitcherApps.count; index++) {
         if (localSwitcherApps[index].processIdentifier == pid) continue;
+        if (index == localSwitcherSelection) survivingSelection = (NSInteger)remaining.count;
         [remaining addObject:localSwitcherApps[index]];
         [remainingWindowIDs addObject:localSwitcherItemWindowIDs[index]];
         [remainingTitles addObject:localSwitcherItemTitles[index]];
@@ -900,53 +991,66 @@ static void removeLocalSwitcherItemsForPID(pid_t pid) {
     localSwitcherItemWindowIDs = remainingWindowIDs;
     localSwitcherItemTitles = remainingTitles;
     if (!remaining.count) { finishLocalSwitcher(NO); return; }
-    localSwitcherSelection = MIN(localSwitcherSelection,(NSInteger)remaining.count-1);
+    localSwitcherSelection = survivingSelection == NSNotFound ? MIN(localSwitcherSelection,(NSInteger)remaining.count-1) : survivingSelection;
     localSwitcherRenderedStart = NSNotFound;
     renderLocalSwitcher();
 }
 
+static void refreshSwitcherAfterClose(NSUInteger session, double delay) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{
+        if (localSwitcherActive && localSwitcherSessionID == session) reloadLocalSwitcherPreservingSelection();
+    });
+}
+
 static void performLocalSwitcherAction(CGKeyCode keyCode) {
-    if (localSwitcherSelection < 0 || localSwitcherSelection >= (NSInteger)localSwitcherApps.count) return;
+    if (!localSwitcherActive || localSwitcherSelection < 0 || localSwitcherSelection >= (NSInteger)localSwitcherApps.count) return;
     NSRunningApplication *selected = localSwitcherApps[localSwitcherSelection];
-    CGWindowID selectedWindowID = localSwitcherItemWindowIDs[localSwitcherSelection].unsignedIntValue;
-    NSInteger oldIndex = localSwitcherSelection;
-    if (keyCode == kVK_ANSI_Q) {
-        if ([selected.bundleIdentifier isEqual:@"com.apple.finder"]) {
-            if (!closeAllFinderWindows(selected)) { NSBeep(); return; }
-            if (!localSwitcherSuppressedPIDs) localSwitcherSuppressedPIDs = [NSMutableSet set];
-            [localSwitcherSuppressedPIDs addObject:@(selected.processIdentifier)];
-            removeLocalSwitcherItemsForPID(selected.processIdentifier);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
+    pid_t pid = selected.processIdentifier;
+    CGWindowID windowID = localSwitcherItemWindowIDs[localSwitcherSelection].unsignedIntValue;
+    NSUInteger session = localSwitcherSessionID;
+    BOOL quit = keyCode == kVK_ANSI_Q;
+    localSwitcherActionPending = YES;
+    static NSUInteger latestRequest;
+    NSUInteger request = ++latestRequest;
+    if ([selected.bundleIdentifier isEqual:@"com.apple.finder"]) {
+        static dispatch_queue_t finderQueue;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ finderQueue = dispatch_queue_create("local.macdows.finder-close",DISPATCH_QUEUE_SERIAL); });
+        dispatch_async(finderQueue, ^{
+            id observation = selected.terminated ? nil : CFBridgingRelease(requestFinderSwitcherClose(pid,windowID,quit));
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!localSwitcherActive || session != localSwitcherSessionID) return;
+                if (observation) {
+                    if (!localSwitcherCloseObservers) localSwitcherCloseObservers = [NSMutableArray array];
+                    [localSwitcherCloseObservers addObject:observation];
+                    AXObserverRef observer = (__bridge AXObserverRef)observation;
+                    CFRunLoopAddSource(CFRunLoopGetMain(),AXObserverGetRunLoopSource(observer),kCFRunLoopCommonModes);
+                }
+                if (quit) localSwitcherOmitEmptyFinder = YES;
                 reloadLocalSwitcherPreservingSelection();
+                if (request == latestRequest) localSwitcherActionPending = NO;
+                refreshSwitcherAfterClose(session,0.25);
+                refreshSwitcherAfterClose(session,0.8);
             });
-            return;
-        }
-        if (![selected terminate]) { NSBeep(); return; }
-        removeLocalSwitcherItemsForPID(selected.processIdentifier);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,300*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
-            reloadLocalSwitcher(0,0,oldIndex);
         });
-    } else if (keyCode == kVK_ANSI_W) {
-        BOOL lastWindow = NO;
-        if (!closeLocalSwitcherWindow(selected,selectedWindowID,&lastWindow)) { NSBeep(); return; }
-        if (selectedWindowID) {
-            if (!localSwitcherSuppressedWindowIDs) localSwitcherSuppressedWindowIDs = [NSMutableSet set];
-            [localSwitcherSuppressedWindowIDs addObject:@(selectedWindowID)];
-        }
-        if (lastWindow && localSwitcherHideFinder && [selected.bundleIdentifier isEqual:@"com.apple.finder"]) {
-            if (!localSwitcherSuppressedPIDs) localSwitcherSuppressedPIDs = [NSMutableSet set];
-            [localSwitcherSuppressedPIDs addObject:@(selected.processIdentifier)];
-            removeLocalSwitcherItemsForPID(selected.processIdentifier);
-        } else if (localSwitcherEveryWindow) {
-            removeSelectedLocalSwitcherItem();
-        }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,250*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
-            reloadLocalSwitcherPreservingSelection();
-        });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,800*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
-            reloadLocalSwitcherPreservingSelection();
-        });
+        return;
     }
+    // Finish the event-tap callback before asking another process to act.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL accepted = !selected.terminated && (quit ? [selected terminate] : closeLocalSwitcherWindow(selected,windowID));
+        if (!localSwitcherActive || session != localSwitcherSessionID) return;
+        if (!accepted) {
+            NSBeep();
+        } else if (quit) {
+            removeLocalSwitcherItemsForPID(pid);
+        } else if (windowID) {
+            if (!localSwitcherSuppressedWindowIDs) localSwitcherSuppressedWindowIDs = [NSMutableSet set];
+            [localSwitcherSuppressedWindowIDs addObject:@(windowID)];
+            reloadLocalSwitcherPreservingSelection();
+        }
+        if (request == latestRequest) localSwitcherActionPending = NO;
+        refreshSwitcherAfterClose(session,0.3);
+    });
 }
 
 static BOOL hasNoWindows(id windows) {
@@ -1516,6 +1620,7 @@ static CGEventRef globeEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef
         memset(arrowConsumed,0,sizeof(arrowConsumed));
         memset(desktopArrowConsumed,0,sizeof(desktopArrowConsumed));
         cycleKeyDown = NO; cutKeyHeld = NO; moveKeyHeld = NO; clearCut();
+        localSwitcherQHeld = NO; localSwitcherWHeld = NO;
         switchGeneration++;
         globeHeld = NO; spaceConsumed = NO; shiftPending = NO; shiftBlocked = NO;
         dispatch_async(dispatch_get_main_queue(), ^{ finishLocalSwitcher(NO); });
@@ -1525,7 +1630,8 @@ static CGEventRef globeEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef
     if (CGEventGetIntegerValueField(event,kCGEventSourceUserData) == nativeMoveTag) return event;
     CGKeyCode keyCode = (CGKeyCode)CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode);
     CGEventFlags eventFlags = CGEventGetFlags(event);
-    if (localSwitcherActive && type == kCGEventFlagsChanged && !(eventFlags & kCGEventFlagMaskCommand)) {
+    if (localSwitcherActive && type == kCGEventFlagsChanged &&
+        !(eventFlags & (kCGEventFlagMaskCommand | kCGEventFlagMaskControl))) {
         finishLocalSwitcher(YES);
         return NULL;
     }
@@ -1533,14 +1639,18 @@ static CGEventRef globeEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef
         finishLocalSwitcher(NO);
         return NULL;
     }
-    if (localSwitcherActive && (keyCode == kVK_ANSI_Q || keyCode == kVK_ANSI_W) &&
+    if ((keyCode == kVK_ANSI_Q || keyCode == kVK_ANSI_W) &&
         (type == kCGEventKeyDown || type == kCGEventKeyUp)) {
         BOOL *held = keyCode == kVK_ANSI_Q ? &localSwitcherQHeld : &localSwitcherWHeld;
-        if (type == kCGEventKeyUp) { *held = NO; return NULL; }
-        if (!*held && !CGEventGetIntegerValueField(event,kCGKeyboardEventAutorepeat))
+        BOOL repeat = CGEventGetIntegerValueField(event,kCGKeyboardEventAutorepeat) != 0;
+        if (type == kCGEventKeyUp && *held) { *held = NO; return NULL; }
+        if (repeat && *held) return NULL;
+        if (localSwitcherActive && type == kCGEventKeyDown && !repeat && !*held) {
+            *held = YES;
+            selectLocalSwitcherAtPoint(NSEvent.mouseLocation);
             performLocalSwitcherAction(keyCode);
-        *held = YES;
-        return NULL;
+        }
+        if (localSwitcherActive) return NULL;
     }
     if ((type == kCGEventKeyDown || type == kCGEventKeyUp) && keyCode == kVK_Tab &&
         (localSwitcherActive || localSwitcherChord(eventFlags))) {

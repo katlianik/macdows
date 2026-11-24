@@ -10,6 +10,8 @@ Macdows is a free macOS menu-bar utility from Astonio Ltd. Cycle through windows
 2. Open Macdows from Applications. Click its menu-bar icon and choose **Settings…**. In **General**, open Accessibility Settings and grant Macdows access to keyboard and window controls.
 3. To limit ⌘Tab to your current desktop, open **Switcher** and choose **Macdows · This desktop**. Under **Display**, choose app icons or previews. For previews, allow Screen Recording in the same pane. The default **macOS · All apps** uses the system switcher.
 
+Move the pointer onto a card or use Tab to select it. While the Macdows switcher is open, ⌘W or ⌃W closes the selected window. ⌘Q or ⌃Q quits the selected app, or closes Finder’s windows when Finder is selected.
+
 macOS may ask for Automation access to Finder when opening a Finder window, and to System Events when switching desktops. Enable only the features you use.
 
 **Windows** controls window cycling, desktop switching, window buttons, dragging and tiling. **Keyboard** controls Globe/Fn and keyboard layout shortcuts. **Apps & Finder** controls what happens when an app becomes active and enables cut-and-move in Finder. Window tiling shortcuts require macOS 15 or later. [All features and shortcuts](https://astonio.com/lab/macdows/index.html#features) · [Website changelog](https://astonio.com/lab/macdows/index.html#updates)

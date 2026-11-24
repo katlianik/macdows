@@ -1,6 +1,11 @@
+#import <Cocoa/Cocoa.h>
+static unsigned int testBeeps;
+static void recordTestBeep(void) { testBeeps++; }
+#define NSBeep recordTestBeep
 #define main macdows_main
 #import "Macdows.app/Contents/Resources/Macdows.m"
 #undef main
+#undef NSBeep
 static dispatch_semaphore_t started, releaseWorker, finished;
 static NSInteger executions;
 static NSUInteger lastExecuted;
@@ -19,6 +24,226 @@ static void fakeExecute(WindowRequest *request) {
  if (executions==1) { dispatch_semaphore_signal(started); dispatch_semaphore_wait(releaseWorker,DISPATCH_TIME_FOREVER); }
  else dispatch_semaphore_signal(finished);
 }
+// Call the production event tap directly; no key is posted to the user's session.
+static BOOL consumeSwitcherEvent(CGEventType type, CGKeyCode key, CGEventFlags flags, BOOL repeat) {
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, key, type != kCGEventKeyUp);
+    CGEventSetType(event, type);
+    CGEventSetFlags(event, flags);
+    CGEventSetIntegerValueField(event, kCGKeyboardEventAutorepeat, repeat);
+    BOOL consumed = globeEvent(NULL, type, event, NULL) == NULL;
+    CFRelease(event);
+    return consumed;
+}
+
+static void testSwitcherModifierLifetime(void) {
+    const CGKeyCode keys[] = { kVK_ANSI_W, kVK_ANSI_Q };
+    localSwitcherEnabled = YES;
+    for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); i++) {
+        CGKeyCode key = keys[i];
+        // No target: even an incorrect implementation cannot close or focus a real app.
+        localSwitcherSelection = NSNotFound;
+        localSwitcherApps = @[];
+        localSwitcherActive = YES;
+        consumeSwitcherEvent(kCGEventFlagsChanged, kVK_Control, kCGEventFlagMaskCommand | kCGEventFlagMaskControl, NO);
+        consumeSwitcherEvent(kCGEventFlagsChanged, kVK_Command, kCGEventFlagMaskControl, NO);
+        assert(localSwitcherActive);
+        assert(consumeSwitcherEvent(kCGEventKeyDown, key, kCGEventFlagMaskControl, NO));
+        consumeSwitcherEvent(kCGEventFlagsChanged, kVK_Control, 0, NO);
+        assert(!localSwitcherActive);
+        assert(consumeSwitcherEvent(kCGEventKeyDown, key, 0, YES));
+        assert(consumeSwitcherEvent(kCGEventKeyUp, key, 0, NO));
+        assert(!consumeSwitcherEvent(kCGEventKeyDown, key, kCGEventFlagMaskControl, NO));
+        assert(!consumeSwitcherEvent(kCGEventKeyUp, key, kCGEventFlagMaskControl, NO));
+    }
+    puts("PASS: Control handoff keeps the switcher active and owns W/Q until key-up");
+}
+
+// Exercise the actual tap, hover hit testing, asynchronous action and displayed list.
+// Only the AX close request and window enumeration are replaced. The panel stays offscreen.
+@interface SwitcherTestPanel : NSPanel
+@end
+@implementation SwitcherTestPanel
+- (BOOL)isVisible { return YES; }
+- (void)orderFrontRegardless {}
+@end
+
+@interface SwitcherTestApp : NSObject
+@property(copy) NSString *bundleIdentifier;
+@property pid_t processIdentifier;
+@end
+@implementation SwitcherTestApp
+- (NSString *)localizedName { return self.bundleIdentifier; }
+- (NSImage *)icon { return nil; }
+- (BOOL)isTerminated { return NO; }
+- (BOOL)terminate { assert(!"Switcher attempted to quit an unintended application"); return NO; }
+@end
+
+static SwitcherTestApp *testFinder, *testFront;
+static NSMutableArray<NSNumber *> *testFinderIDs;
+static NSArray<NSNumber *> *staleFinderIDsOnce;
+static NSNumber *refusedWindow;
+static NSUInteger closeRequests;
+static dispatch_semaphore_t pauseFinderClose, finishedFinderClose;
+
+static AXObserverRef recordFinderClose(pid_t pid, CGWindowID target, BOOL all) {
+    assert(pid == testFinder.processIdentifier);
+    assert(!NSThread.isMainThread);
+    if (pauseFinderClose)
+        assert(dispatch_semaphore_wait(pauseFinderClose,dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC)) == 0);
+    @synchronized (testFinder) {
+        closeRequests++;
+        for (NSNumber *window in testFinderIDs.copy) {
+            if ((all || window.unsignedIntValue == target) && ![window isEqual:refusedWindow])
+                [testFinderIDs removeObject:window];
+        }
+    }
+    if (finishedFinderClose) dispatch_semaphore_signal(finishedFinderClose);
+    return NULL; // Exercises reconciliation even when Finder does not supply notifications.
+}
+
+static NSArray<NSRunningApplication *> *readTestSwitcherApps(void) {
+    @synchronized (testFinder) {
+        NSMutableArray *apps = [NSMutableArray arrayWithObject:testFront];
+        NSMutableArray *ids = [NSMutableArray arrayWithObject:@950001];
+        NSMutableArray *titles = [NSMutableArray arrayWithObject:@"Front app"];
+        NSArray *reported = staleFinderIDsOnce ?: testFinderIDs;
+        staleFinderIDsOnce = nil;
+        BOOL hasWindow = reported.count > 0;
+        if (includeInLocalSwitcher(testFinder.bundleIdentifier, hasWindow, hasWindow)) {
+            [apps addObject:testFinder];
+            [ids addObject:reported.firstObject ?: @0];
+            [titles addObject:@"Finder"];
+        }
+        localSwitcherItemWindowIDs = ids;
+        localSwitcherItemTitles = titles;
+        return apps;
+    }
+}
+
+static void awaitSwitcherRefresh(void) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3];
+    while (localSwitcherActionPending && deadline.timeIntervalSinceNow > 0)
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    assert(!localSwitcherActionPending);
+}
+
+static void hoverTestFinder(void) {
+    [localSwitcherPanel.contentView layoutSubtreeIfNeeded];
+    NSView *finderCell = localSwitcherStack.arrangedSubviews[1];
+    NSPoint center = NSMakePoint(NSMidX(finderCell.bounds), NSMidY(finderCell.bounds));
+    NSPoint point = [localSwitcherPanel convertPointToScreen:[finderCell convertPoint:center toView:nil]];
+    localSwitcherLastPointer = NSMakePoint(-1,-1);
+    selectLocalSwitcherAtPoint(point);
+    assert(localSwitcherSelection == 1);
+    localSwitcherSelection = 0;
+    selectLocalSwitcherAtPoint(point);
+    assert(localSwitcherSelection == 0); // A stationary pointer cannot undo a keyboard choice.
+    localSwitcherLastPointer = NSMakePoint(-1,-1);
+    selectLocalSwitcherAtPoint(point);
+    // No movement of the actual desktop pointer; the key handler sees the cached location.
+    localSwitcherLastPointer = NSEvent.mouseLocation;
+}
+
+static void openTestSwitcher(void) {
+    assert(!localSwitcherActive);
+    // First Tab preselects the other app. Second Tab puts the keyboard selection on the front app.
+    for (int press = 0; press < 2; press++) {
+        assert(consumeSwitcherEvent(kCGEventKeyDown, kVK_Tab, kCGEventFlagMaskCommand, NO));
+        assert(consumeSwitcherEvent(kCGEventKeyUp, kVK_Tab, kCGEventFlagMaskCommand, NO));
+    }
+    assert(localSwitcherActive && localSwitcherSelection == 0);
+}
+
+static void sendFinderAction(CGKeyCode key, CGEventFlags flags) {
+    NSUInteger before = closeRequests;
+    assert(consumeSwitcherEvent(kCGEventKeyDown, key, flags, NO));
+    assert(consumeSwitcherEvent(kCGEventKeyDown, key, flags, YES));
+    assert(consumeSwitcherEvent(kCGEventKeyUp, key, flags, NO));
+    awaitSwitcherRefresh();
+    assert(closeRequests == before + 1);
+}
+
+static void testFinderSwitcherActions(void) {
+    testFront = [SwitcherTestApp new];
+    testFront.bundleIdentifier = @"test.front";
+    testFront.processIdentifier = INT_MAX - 1;
+    testFinder = [SwitcherTestApp new];
+    testFinder.bundleIdentifier = @"com.apple.finder";
+    testFinder.processIdentifier = INT_MAX - 2;
+    testFinderIDs = [@[@950101, @950102] mutableCopy];
+    unsigned int beepsBefore = testBeeps;
+    localSwitcherPreviews = localSwitcherEveryWindow = localSwitcherHideFinder = NO;
+    localSwitcherCurrentOnly = localSwitcherEnabled = YES;
+    readLocalSwitcherApps = readTestSwitcherApps;
+    AXObserverRef (*savedRequest)(pid_t, CGWindowID, BOOL) = requestFinderSwitcherClose;
+    requestFinderSwitcherClose = recordFinderClose;
+    localSwitcherPanel = [[SwitcherTestPanel alloc] initWithContentRect:NSMakeRect(0,0,240,100)
+        styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    localSwitcherContentView = localSwitcherPanel.contentView;
+    localSwitcherStack = [NSStackView new];
+    localSwitcherStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    localSwitcherStack.spacing = 8;
+    localSwitcherStack.distribution = NSStackViewDistributionFillEqually;
+    [localSwitcherContentView addSubview:localSwitcherStack];
+
+    assert(needsSwitcherAXWindows(testFinder.bundleIdentifier, 1)); // A single CG surface may be Finder's desktop.
+    assert(!needsSwitcherAXWindows(testFront.bundleIdentifier, 1));
+    openTestSwitcher();
+    hoverTestFinder();
+
+    sendFinderAction(kVK_ANSI_W, kCGEventFlagMaskControl);
+    assert([testFinderIDs isEqual:@[@950102]]);
+    assert(localSwitcherApps.count == 2 && localSwitcherItemWindowIDs[1].unsignedIntValue == 950102);
+    sendFinderAction(kVK_ANSI_W, kCGEventFlagMaskCommand);
+    assert(!testFinderIDs.count && localSwitcherApps.count == 1); // Current desktop forces empty-Finder filtering.
+
+    finishLocalSwitcher(NO);
+    localSwitcherCurrentOnly = NO;
+    [testFinderIDs addObjectsFromArray:@[@950103,@950104]];
+    openTestSwitcher();
+    hoverTestFinder();
+    refusedWindow = @950104;
+    sendFinderAction(kVK_ANSI_Q, kCGEventFlagMaskControl);
+    assert([testFinderIDs isEqual:@[refusedWindow]] && localSwitcherApps.count == 2);
+    refusedWindow = nil;
+    staleFinderIDsOnce = testFinderIDs.copy; // Finder acknowledges AXPress before its window disappears from AX.
+    sendFinderAction(kVK_ANSI_Q, kCGEventFlagMaskCommand);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+    while (localSwitcherApps.count == 2 && deadline.timeIntervalSinceNow > 0)
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    assert(!testFinderIDs.count && localSwitcherApps.count == 1);
+    assert(testBeeps == beepsBefore);
+    finishLocalSwitcher(NO);
+    assert(includeInLocalSwitcher(testFinder.bundleIdentifier, NO, NO)); // Next session honors All Desktops preference.
+
+    // Release the modifiers and reopen the switcher before Finder acknowledges Q.
+    // Completion from the old session must not hide a windowless Finder in the new session.
+    [testFinderIDs addObject:@950105];
+    openTestSwitcher();
+    hoverTestFinder();
+    pauseFinderClose = dispatch_semaphore_create(0);
+    finishedFinderClose = dispatch_semaphore_create(0);
+    assert(consumeSwitcherEvent(kCGEventKeyDown, kVK_ANSI_Q, kCGEventFlagMaskControl, NO));
+    assert(consumeSwitcherEvent(kCGEventFlagsChanged, kVK_Control, 0, NO));
+    openTestSwitcher();
+    dispatch_semaphore_signal(pauseFinderClose);
+    assert(dispatch_semaphore_wait(finishedFinderClose,dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC)) == 0);
+    assert(consumeSwitcherEvent(kCGEventKeyUp, kVK_ANSI_Q, 0, NO));
+    [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+    assert(!testFinderIDs.count && localSwitcherApps.count == 2);
+    assert(includeInLocalSwitcher(testFinder.bundleIdentifier, NO, NO) && !localSwitcherActionPending);
+    assert(testBeeps == beepsBefore);
+    finishLocalSwitcher(NO);
+    pauseFinderClose = finishedFinderClose = nil;
+
+    localSwitcherPanel = nil;
+    localSwitcherStack = nil;
+    localSwitcherContentView = nil;
+    readLocalSwitcherApps = buildLocalSwitcherApps;
+    requestFinderSwitcherClose = savedRequest;
+    puts("PASS: hovered Finder W/Q, selected window identity, partial refusal, empty icon and repeat suppression");
+}
+
 static void testSettingChoices(void) {
     NSString *suite = [@"local.macdows.tests.settings." stringByAppendingString:NSUUID.UUID.UUIDString];
     NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:suite];
@@ -180,6 +405,8 @@ static void testTilingAvailability(void) {
 int main(void) { @autoreleasepool {
  testSettingChoices();
  testStatusMenu();
+ testSwitcherModifierLifetime();
+ testFinderSwitcherActions();
  testTilingAvailability();
  localSwitcherEnabled=YES;
  assert(localSwitcherDisplayMode(NO,NO)==LocalSwitcherDisplayIcons);
