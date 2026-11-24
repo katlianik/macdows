@@ -1,0 +1,8 @@
+.DS_Store
+/Macdows.app/Contents/MacOS/
+/Macdows.app/Contents/_CodeSignature/
+/Macdows.app/Contents/Resources/*.scpt
+/test
+*.xcarchive/
+*.dmg
+*.zip

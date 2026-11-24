@@ -1,0 +1,30 @@
+# Macdows
+
+> Free macOS menu-bar utility by Astonio Ltd for Windows-style window actions, keyboard habits and Finder file moving.
+
+Macdows 1.35 supports macOS 11 or later on Apple silicon and Intel Macs. It is free forever, with no subscriptions or hidden fees. The app is Developer ID signed and notarized by Apple.
+
+## Product information
+
+- [Release notes for the current build 73](https://astonio.com/lab/macdows/#updates)
+- [GitHub repository and releases](https://github.com/katlianik/macdows)
+
+- [Features, shortcut modes, requirements, pricing and installation](https://astonio.com/lab/macdows/index.md)
+- [Official landing page](https://astonio.com/lab/macdows/index.html)
+- [Download the Macdows DMG](https://astonio.com/lab/macdows/Macdows.dmg)
+- [Download the matching source archive](https://astonio.com/lab/macdows/Macdows-1.35-source.zip)
+
+Command-Grave cycles through an app’s windows independently of the active keyboard layout, using the physical key above Tab on standard Mac keyboards. Add Shift to cycle backwards.
+
+Macdows also includes an optional Command-Tab replacement, disabled by default. It can show every real window on the current desktop as a separate titled preview, hide Finder when Finder has no windows, and show hidden-item counts at either edge. While the panel is open, Command-W closes the selected window and Command-Q quits the selected app; for Finder, Command-Q closes all Finder windows.
+
+
+## Window keyboard shortcuts
+
+- Control+Shift+Option+Left/Right: release the keys to switch to the adjacent macOS desktop through the standard Mission Control action. Globe/Fn also works in place of Control when Macdows maps Globe/Fn to Control.
+- Control+Left/Right: native macOS Move & Resize, placing the active window on the left or right half at full working height.
+- Control+Option+Left/Right: native macOS Arrange, placing the active window on the chosen half and a second eligible window on the other half. macOS selects the second window.
+- Control+Option+Up: fill the desktop and remember the previous size. Control+Option+Down: restore the saved size, sharing history with the green button. A large window without a useful smaller restore size becomes 80% of the desktop width and height, via Down or the green button. Repeated presses keep the size stable. Restore affects the active window, not both windows together.
+- Both arrow-shortcut options are independent, enabled by default, and require macOS 15 or later. Left/Right requires native tiling support and follows macOS tiling margins and application minimum sizes. Up and the green button use native Fill on macOS 15+. Down restores the size saved before the placement sequence and centers the window using its actual accepted size. Native commands run without opening menus, using system App Shortcuts installed by Macdows. Reopen other apps after installing this update so they load the shortcuts. New actions replace pending actions; no delayed resize retries run in the background. All actions respect window size limits. Disable Control+Left/Right to retain Space switching.
+- Command-Grave cycles the current app’s standard, non-minimized windows in a stable circular order. Add Shift to go backwards. Uses the physical key above Tab on standard Mac keyboards, independently of the active layout.
+- Optional Command-Tab replacement with separate titled window previews, current-desktop filtering, empty-Finder filtering, preview preloading, edge counts and selected-window Command-W / selected-app Command-Q actions. Disabled by default.
