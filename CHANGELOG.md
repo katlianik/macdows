@@ -1,5 +1,11 @@
 # Macdows release notes
 
+## 1.35 build 75 · 2026-11-24
+
+- Choose **Settings…** from the menu bar to open one window. Its five panes are Switcher, Windows, Keyboard, Apps & Finder, and General. Settings stay visible when unavailable.
+- **Windows** now has one red-button choice. Close the window, quit after the last window closes, or quit when closing any window. The option to keep menu-bar and background apps running applies to both quit modes.
+- **Switcher** groups ⌘Tab mode, appearance, Finder filtering and Screen Recording access. **Windows** groups window cycling and desktop switching with window controls. **Keyboard** groups Globe/Fn and keyboard layout shortcuts.
+
 ## 1.35 build 74 · 2026-11-24
 
 - Menu sections use distinct headings so unavailable commands are easier to spot. All settings remain within one submenu.

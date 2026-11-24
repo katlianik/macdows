@@ -6,7 +6,7 @@ Macdows 1.35 supports macOS 11 or later on Apple silicon and Intel Macs. It is f
 
 ## Product information
 
-- [Release notes for the current build 74](https://astonio.com/lab/macdows/index.html#updates)
+- [Release notes for the current build 75](https://astonio.com/lab/macdows/index.html#updates)
 - [GitHub repository and releases](https://github.com/katlianik/macdows)
 
 - [Features, shortcut modes, requirements, pricing and installation](https://astonio.com/lab/macdows/index.md)
@@ -15,6 +15,8 @@ Macdows 1.35 supports macOS 11 or later on Apple silicon and Intel Macs. It is f
 - [Download the matching source archive](https://astonio.com/lab/macdows/Macdows-1.35-source.zip)
 
 Command-Grave cycles through an app’s windows independently of the active keyboard layout, using the physical key above Tab on standard Mac keyboards. Add Shift to cycle backwards.
+
+Choose Settings… in the Macdows menu. The five panes are Switcher (⌘Tab, previews and Screen Recording), Windows (window cycling, desktop switching, window buttons, tiling and dragging), Keyboard (Globe/Fn and keyboard layout shortcuts), Apps & Finder (app activation and file moves), and General (login, menu-bar icon and Accessibility).
 
 Macdows also includes an optional Command-Tab replacement, disabled by default. It can show every real window on the current desktop as a separate titled preview, hide Finder when Finder has no windows, and show hidden-item counts at either edge. While the panel is open, Command-W closes the selected window and Command-Q quits the selected app; for Finder, Command-Q closes all Finder windows.
 

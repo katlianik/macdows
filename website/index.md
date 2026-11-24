@@ -3,7 +3,7 @@
 Free macOS menu-bar utility by Astonio Ltd. Globe+Shift language switching, red-button quit, green-button maximize and restore, and cut-and-move in Finder.
 
 - Publisher: Astonio Ltd (https://astonio.com).
-- Version: 1.35 (build 74).
+- Version: 1.35 (build 75).
 - Optional Macdows Command-Tab switcher can show every real window on the current desktop as a separate preview with its title, hide Finder when it has no windows, and show hidden-item counts at the edges. It is disabled by default. While the panel is open, Command-W closes the selected window and Command-Q quits the selected app; for Finder, Command-Q closes all Finder windows.
 - Control-Shift-Option-Left/Right switches to the adjacent macOS desktop after the keys are released. Globe/Fn can be used instead of Control when Macdows maps Globe/Fn to Control.
 - Command-Grave cycles through the current app’s standard windows in either direction, including across the last/first boundary. Add Shift to go backwards. The shortcut uses the physical key across keyboard layouts.
@@ -18,11 +18,26 @@ Free macOS menu-bar utility by Astonio Ltd. Globe+Shift language switching, red-
 
 ## Release notes
 
+- **1.35 build 75, 24 November 2026.** The menu bar opens a single Settings window. Related controls stay together, unavailable options stay visible, and one red-button choice covers closing the window or quitting the app.
 - **1.35 build 74, 24 November 2026.** Menu section headings are visually distinct from unavailable commands. On macOS 11–14, unavailable tiling shortcuts no longer count as active.
 - **1.35 build 73, 24 November 2026.** Switcher mode and desktop scope are chosen together. Dependent settings stay visible in gray within one submenu level. Preview modes check Screen Recording access on startup.
 - **1.35 build 70, 24 November 2026.** Added per-window titled previews, edge counts and preview preloading.
 
 [GitHub repository](https://github.com/katlianik/macdows) · [Versioned releases](https://github.com/katlianik/macdows/releases) · [Release feed](https://github.com/katlianik/macdows/releases.atom)
+
+## Where to find a setting
+
+Choose **Settings…** from the Macdows menu in the menu bar.
+
+| Pane | Settings |
+| --- | --- |
+| Switcher | ⌘Tab mode, desktop scope, icons or previews, empty Finder filtering and Screen Recording for previews. |
+| Windows | Cycle app windows, switch desktops, change window button actions, tile and drag windows. |
+| Keyboard | Remap Globe/Fn and switch keyboard layouts. |
+| Apps & Finder | Restore or reopen windows on activation and move files with ⌘X and ⌘V in Finder. |
+| General | Launch at login, menu-bar icon and Accessibility settings. |
+
+For ⌘Tab on the current desktop, choose **Macdows · This desktop** in Switcher. With **Macdows · All desktops**, you can choose whether to hide Finder when it has no windows. **macOS · All apps** uses the system switcher.
 
 ## Features
 
@@ -57,7 +72,7 @@ In Command mode, Globe-Space follows macOS Command-Space. Input source switching
 1. Quit an older Macdows or RedQuit copy.
 2. Open Macdows.dmg and drag Macdows.app to Applications.
 3. Open Macdows from Applications.
-4. Enable Accessibility / Device Control permission for the installed copy, then reopen it.
+4. Choose **Settings…** from the Macdows menu. Open Accessibility Settings from **General**, enable the installed copy and reopen Macdows.
 5. Allow Automation access to Finder for the empty-Finder feature and to System Events for desktop switching when prompted.
 
 [Install with Homebrew](https://github.com/katlianik/macdows#install-with-homebrew) · [Uninstall Macdows](https://github.com/katlianik/macdows#remove-macdows)
@@ -74,11 +89,11 @@ Yes. Macdows is free forever, with no subscriptions or hidden fees.
 
 ### How do I switch keyboard languages?
 
-Enable Globe-Shift in Globe Key & Language, then press and release Globe+Shift. Globe-Space is a separate alternative. Choose your keyboard layouts in macOS Text Input settings. In the default Globe-to-Option mode, Option+Shift also switches layouts.
+Open Settings… from the Macdows menu and choose Keyboard. Enable the Shift shortcut, then press and release Globe+Shift. In the default Globe-to-Option mode, Option+Shift works too. The Space shortcut has its own setting. Add the keyboard layouts you want in macOS Text Input settings.
 
 ### What do the red and green buttons do?
 
-The red button quits the app, with quit-only-on-last-window enabled by default. Finder keeps its standard close behavior. Declared background apps and apps exposing their own menu-bar icon close normally and keep running; this protection is enabled by default and can be switched off. The green button uses native Fill on macOS 15+ and restores the size saved before the placement sequence and centers the window when clicked again. Earlier macOS versions use direct resizing. Manually changing the window starts a new placement sequence. An initially large window without a useful smaller restore size is centered at 80% of the desktop width and height.
+In Settings… under Windows, choose whether the red button closes the window, quits after the last window closes (the default), or quits when you close any window. Finder always closes its window. The two quit modes can keep menu-bar and background apps running. The green button fills the desktop and restores the saved size on the next click. On macOS 15 and later it uses native Fill. On earlier versions it resizes the window directly.
 
 ### How do cut and paste work in Finder?
 
@@ -90,7 +105,7 @@ Macdows 1.35 supports Apple silicon and Intel Macs running macOS 11 or later. La
 
 ### How do I install Macdows?
 
-Download Macdows.dmg, quit an older copy, drag Macdows.app into Applications and open it there. Enable its Accessibility or Device Control permission in macOS. Allow Automation access to Finder for the empty-Finder feature and to System Events for desktop switching when prompted.
+Quit any running copy, open the DMG and drag Macdows to Applications. Open the installed app and choose Settings… from its menu bar icon. In General, open Accessibility Settings and enable Macdows. If you use the optional previews, allow Screen Recording in Switcher. macOS may also ask for Automation access to Finder for opening a Finder window, or to System Events for desktop switching.
 
 
 ## Window keyboard shortcuts

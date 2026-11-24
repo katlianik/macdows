@@ -19,55 +19,149 @@ static void fakeExecute(WindowRequest *request) {
  if (executions==1) { dispatch_semaphore_signal(started); dispatch_semaphore_wait(releaseWorker,DISPATCH_TIME_FOREVER); }
  else dispatch_semaphore_signal(finished);
 }
+static void testSettingChoices(void) {
+    NSString *suite = [@"local.macdows.tests.settings." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    [prefs setBool:YES forKey:localSwitcherCurrentOnlyKey];
+    [prefs setBool:YES forKey:localSwitcherEveryWindowKey];
+    [prefs setBool:YES forKey:localSwitcherPreviewsKey];
+    [prefs setBool:NO forKey:localSwitcherHideFinderKey];
+
+    // Switching to macOS must preserve the user's previous Macdows configuration.
+    storeSettingChoice(prefs, @"scope", SwitcherSystem);
+    storeSettingChoice(prefs, @"display", LocalSwitcherDisplayIcons);
+    storeSettingChoice(prefs, localSwitcherHideFinderKey, YES);
+    assert(![prefs boolForKey:localSwitcherKey] && [prefs boolForKey:localSwitcherCurrentOnlyKey]);
+    assert([prefs boolForKey:localSwitcherPreviewsKey] && [prefs boolForKey:localSwitcherEveryWindowKey]);
+    assert(![prefs boolForKey:localSwitcherHideFinderKey]);
+
+    storeSettingChoice(prefs, @"scope", SwitcherThisDesktop);
+    storeSettingChoice(prefs, localSwitcherHideFinderKey, YES);
+    assert([prefs boolForKey:localSwitcherKey] && [prefs boolForKey:localSwitcherCurrentOnlyKey]);
+    assert(![prefs boolForKey:localSwitcherHideFinderKey]);
+    storeSettingChoice(prefs, @"scope", SwitcherAllDesktops);
+    assert([prefs boolForKey:localSwitcherKey] && ![prefs boolForKey:localSwitcherCurrentOnlyKey]);
+    storeSettingChoice(prefs, localSwitcherHideFinderKey, YES);
+    assert([prefs boolForKey:localSwitcherHideFinderKey]);
+
+    storeSettingChoice(prefs, @"display", LocalSwitcherDisplayIcons);
+    assert(![prefs boolForKey:localSwitcherPreviewsKey] && ![prefs boolForKey:localSwitcherEveryWindowKey]);
+    storeSettingChoice(prefs, @"display", LocalSwitcherDisplayAppPreviews);
+    assert([prefs boolForKey:localSwitcherPreviewsKey] && ![prefs boolForKey:localSwitcherEveryWindowKey]);
+    storeSettingChoice(prefs, @"display", LocalSwitcherDisplayEveryWindow);
+    assert([prefs boolForKey:localSwitcherPreviewsKey] && [prefs boolForKey:localSwitcherEveryWindowKey]);
+
+    storeSettingChoice(prefs, @"redMode", 1);
+    assert([prefs boolForKey:redKey] && [prefs boolForKey:lastKey]);
+    storeSettingChoice(prefs, backgroundKey, YES);
+    storeSettingChoice(prefs, @"redMode", 0);
+    storeSettingChoice(prefs, backgroundKey, NO);
+    assert(![prefs boolForKey:redKey] && [prefs boolForKey:lastKey] && [prefs boolForKey:backgroundKey]);
+    storeSettingChoice(prefs, @"redMode", 2);
+    assert([prefs boolForKey:redKey] && ![prefs boolForKey:lastKey]);
+    storeSettingChoice(prefs, backgroundKey, NO);
+    assert(![prefs boolForKey:backgroundKey]);
+
+    storeSettingChoice(prefs, globeShiftKey, NO);
+    storeSettingChoice(prefs, languageKey, YES);
+    for (GlobeMode mode = GlobeOff; mode <= GlobeControl; mode++) {
+        storeSettingChoice(prefs, @"globe", mode);
+        assert([prefs integerForKey:globeModeKey] == mode);
+        assert(![prefs boolForKey:globeShiftKey] && [prefs boolForKey:languageKey]);
+    }
+    storeSettingChoice(prefs, globeShiftKey, YES);
+    storeSettingChoice(prefs, languageKey, NO);
+    assert([prefs boolForKey:globeShiftKey] && ![prefs boolForKey:languageKey]);
+
+    [prefs removePersistentDomainForName:suite];
+    puts("PASS: settings choices preserve child preferences and reject inactive changes");
+}
+
 static void testStatusMenu(void) {
- [NSApplication sharedApplication];
- Macdows *controller = [Macdows new];
- NSMenu *root = [controller buildStatusMenu];
- assert(!root.autoenablesItems);
- NSMutableSet *headings = [NSMutableSet set];
- for (NSMenuItem *section in root.itemArray) {
-     if (!section.submenu) continue;
-     assert(!section.submenu.autoenablesItems);
-     for (NSMenuItem *row in section.submenu.itemArray) {
-         assert(!row.hasSubmenu && !row.hidden);
-         if (@available(macOS 14.0, *)) {
-             if (row.isSectionHeader) [headings addObject:row.title];
-         } else if (row.attributedTitle.length && !row.action && !row.enabled) {
-             [headings addObject:row.title];
-         }
-     }
- }
- NSSet *expectedHeadings = [NSSet setWithArray:@[@"Switch with ⌘Tab", @"Macdows appearance", @"Macdows filters",
-     @"Switch", @"Move & resize", @"Open a window if none exist", @"Use Globe / Fn as", @"Switch keyboard layouts"]];
- assert([headings isEqualToSet:expectedHeadings]);
- assert(!controller.status.enabled && !controller.status.action);
- localSwitcherEnabled = NO;
- localSwitcherCurrentOnly = localSwitcherHideFinder = localSwitcherPreviews = YES;
- redEnabled = NO;
- [controller syncMenuChoices];
- assert(controller.scopeChoices[SwitcherSystem].state);
- assert(!controller.redLast.enabled && !controller.redBackground.enabled);
- assert(!controller.switcherFinder.enabled && !controller.switcherFinder.state && !controller.previewAccess.enabled);
- for (NSMenuItem *row in controller.displayChoices) assert(!row.hidden && !row.enabled && !row.state);
- localSwitcherEnabled = redEnabled = YES;
- [controller syncMenuChoices];
- assert(controller.scopeChoices[SwitcherThisDesktop].state && !controller.scopeChoices[SwitcherSystem].state);
- assert(!controller.switcherFinder.enabled && controller.switcherFinder.state && controller.displayChoices[LocalSwitcherDisplayAppPreviews].enabled);
- assert(controller.redLast.enabled && controller.redBackground.enabled && controller.previewAccess.enabled);
- [controller menuWillOpen:root];
- localSwitcherCurrentOnly = NO;
- controller.previewAccessWasAllowed = YES;
- [controller menuNeedsUpdate:root];
- assert(!controller.switcherFinder.enabled && controller.previewAccess.enabled);
- [controller menuDidClose:root];
- [controller menuNeedsUpdate:root];
- assert(controller.scopeChoices[SwitcherAllDesktops].state && !controller.scopeChoices[SwitcherThisDesktop].state);
- assert(controller.switcherFinder.enabled && controller.switcherFinder.state && !controller.previewAccess.enabled);
- localSwitcherPreviews = NO;
- controller.previewAccessWasAllowed = NO;
- [controller syncMenuChoices];
- assert(!controller.previewAccess.enabled && !controller.previewAccess.hidden);
- puts("PASS: one submenu level, persistent rows, dependent controls, permission states and tracking");
+    [NSApplication sharedApplication];
+    Macdows *controller = [Macdows new];
+    NSMenu *root = [controller buildStatusMenu];
+    NSMutableArray<NSMenuItem *> *rows = [NSMutableArray array];
+    for (NSMenuItem *item in root.itemArray) {
+        assert(!item.hasSubmenu && !item.hidden);
+        if (!item.separatorItem) [rows addObject:item];
+    }
+    assert(rows.count == 3);
+    assert(!rows[0].action && !rows[0].enabled);
+    assert(rows[1].action == @selector(showSettings:) && rows[1].target == controller);
+    assert([rows[1].keyEquivalent isEqual:@","]);
+    assert(rows[2].action == @selector(terminate:) && [rows[2].keyEquivalent isEqual:@"q"]);
+    [controller prepareSettingsWindow];
+    assert(controller.preferencesWindow != nil);
+    [controller syncSettings];
+
+    NSDictionary<NSString *, NSControl *> *controls = controller.preferencesWindow.controls;
+    NSArray<NSArray<NSString *> *> *panes = @[
+        @[@"scope", @"display", localSwitcherHideFinderKey, @"previewAccess"],
+        @[@"redMode", backgroundKey, greenKey, optionClickKey, cycleKey, desktopKey, dragKey, snapKey, arrangeKey],
+        @[@"globe", globeShiftKey, languageKey],
+        @[restoreKey, finderKey, otherAppsKey, fileCutKey],
+        @[@"login", @"loginSettings", @"accessibility", @"menuIcon", @"website"]
+    ];
+    NSMutableSet<NSString *> *allKeys = [NSMutableSet set];
+    for (NSUInteger index = 0; index < panes.count; ++index) {
+        [controller.preferencesWindow selectPane:index];
+        NSArray<NSString *> *expected = panes[index];
+        NSMutableSet *reachable = [NSMutableSet set];
+        for (NSString *key in controls) {
+            NSControl *control = controls[key];
+            assert([control.identifier isEqual:key]);
+            if (control.window == controller.preferencesWindow.window && !control.hiddenOrHasHiddenAncestor) {
+                assert(control.action && control.target);
+                [reachable addObject:key];
+            }
+        }
+        assert([reachable isEqualToSet:[NSSet setWithArray:expected]]);
+        [allKeys addObjectsFromArray:expected];
+    }
+    assert(allKeys.count == controls.count);
+    assert(!controller.preferencesWindow.window.visible);
+    NSPopUpButton *scope = (NSPopUpButton *)controls[@"scope"];
+    NSPopUpButton *display = (NSPopUpButton *)controls[@"display"];
+    NSButton *finder = (NSButton *)controls[localSwitcherHideFinderKey];
+    NSButton *background = (NSButton *)controls[backgroundKey];
+    NSControl *permission = controls[@"previewAccess"];
+    globeMode = GlobeOff;
+    localSwitcherCurrentOnly = YES;
+    localSwitcherHideFinder = NO;
+    localSwitcherPreviews = YES;
+    localSwitcherEveryWindow = NO;
+    redEnabled = localSwitcherEnabled = NO;
+    controller.previewAccessWasAllowed = NO;
+    [controller syncSettings];
+    assert(scope.indexOfSelectedItem == SwitcherSystem);
+    assert(!display.enabled && !finder.enabled && !permission.enabled && !background.enabled);
+    assert(controls[greenKey].enabled && controls[optionClickKey].enabled);
+    assert(controls[finderKey].enabled && controls[otherAppsKey].enabled && controls[restoreKey].enabled);
+
+    redEnabled = localSwitcherEnabled = YES;
+    [controller syncSettings];
+    assert(scope.indexOfSelectedItem == SwitcherThisDesktop && display.enabled);
+    assert(display.indexOfSelectedItem == LocalSwitcherDisplayAppPreviews);
+    assert(!finder.enabled && finder.state == NSControlStateValueOn);
+    assert(permission.enabled && background.enabled);
+
+    localSwitcherCurrentOnly = NO;
+    controller.previewAccessWasAllowed = YES;
+    [controller syncSettings];
+    assert(scope.indexOfSelectedItem == SwitcherAllDesktops);
+    assert(finder.enabled && finder.state == NSControlStateValueOff && !permission.enabled);
+    localSwitcherPreviews = NO;
+    controller.previewAccessWasAllowed = NO;
+    [controller syncSettings];
+    assert(display.indexOfSelectedItem == LocalSwitcherDisplayIcons && !permission.enabled);
+    for (GlobeMode mode = GlobeOff; mode <= GlobeControl; mode++) {
+        globeMode = mode;
+        [controller syncSettings];
+        assert(controls[globeShiftKey].enabled && controls[languageKey].enabled);
+    }
+    globeMode = GlobeOff;
+    puts("PASS: flat status menu and consistent settings availability");
 }
 static void testTilingAvailability(void) {
  NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:@"local.macdows.tests.tiling"];
@@ -84,6 +178,7 @@ static void testTilingAvailability(void) {
  puts("PASS: unsupported tiling shortcuts stay inactive and preserve their saved choices");
 }
 int main(void) { @autoreleasepool {
+ testSettingChoices();
  testStatusMenu();
  testTilingAvailability();
  localSwitcherEnabled=YES;

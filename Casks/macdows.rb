@@ -1,6 +1,6 @@
 cask "macdows" do
-  version "1.35,74"
-  sha256 "e6bb4c4558e200b7dd06a1faf1d770518498e92f1065908a2a99d3e99bf58e44"
+  version "1.35,75"
+  sha256 "41331323b7f6f51d6e6f694fec29f89a099415a44616ba5b6e83f270f35cabd5"
 
   url "https://github.com/katlianik/macdows/releases/download/v#{version.csv.first}-build#{version.csv.second}/Macdows.dmg"
   name "Macdows"

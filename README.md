@@ -7,14 +7,14 @@ Macdows is a free macOS menu-bar utility from Astonio Ltd. Cycle through windows
 ## Get started
 
 1. On an Intel or Apple silicon Mac running macOS 11 or later, open the DMG and drag Macdows into Applications. Quit any running copy before updating.
-2. Open Macdows and grant Accessibility access for keyboard and window controls.
-3. Open **⌘Tab Switcher** from the menu bar. Choose **Macdows · This Desktop** to limit the list to windows on your current desktop. Choose icons or previews underneath. Screen Recording access is needed for previews. The default **macOS · All Apps** uses the system switcher.
+2. Open Macdows from Applications. Click its menu-bar icon and choose **Settings…**. In **General**, open Accessibility Settings and grant Macdows access to keyboard and window controls.
+3. To limit ⌘Tab to your current desktop, open **Switcher** and choose **Macdows · This desktop**. Under **Display**, choose app icons or previews. For previews, allow Screen Recording in the same pane. The default **macOS · All apps** uses the system switcher.
 
 macOS may ask for Automation access to Finder when opening a Finder window, and to System Events when switching desktops. Enable only the features you use.
 
-Other features include Globe/Fn language shortcuts, optional red-click quit and green-click fill/restore, and cut-and-move in Finder. Window tiling shortcuts require macOS 15 or later. [All features and shortcuts](https://astonio.com/lab/macdows/index.html#features)
+**Windows** controls window cycling, desktop switching, window buttons, dragging and tiling. **Keyboard** controls Globe/Fn and keyboard layout shortcuts. **Apps & Finder** controls what happens when an app becomes active and enables cut-and-move in Finder. Window tiling shortcuts require macOS 15 or later. [All features and shortcuts](https://astonio.com/lab/macdows/index.html#features) · [Website changelog](https://astonio.com/lab/macdows/index.html#updates)
 
-For a bug report, include your macOS version, Macdows build, relevant menu choices, and the shortest steps that reproduce the issue.
+For a bug report, include your macOS version, Macdows build, relevant settings, and the shortest steps that reproduce the issue.
 
 ![Macdows moves the blue selection from Field notes to Ridge study and then to Route plan while all three window previews stay in place.](website/window-switcher.gif)
 
@@ -34,7 +34,7 @@ For later releases, run `brew update` and `brew upgrade --cask katlianik/macdows
 
 ## Remove Macdows
 
-1. In **General**, turn off **Launch at Login** if enabled. On macOS 15 or later, turn off both tiling options in **Windows & Desktops** and the green-button feature in **Window Buttons** to restore any App Shortcuts Macdows managed. Reopen affected apps to reload their shortcuts.
+1. Choose **Settings…** from the Macdows menu. In **General**, turn off **Launch at login** if enabled. On macOS 15 or later, open **Windows** and turn off **Tile left or right**, **Arrange, fill or restore** and **Fill or restore with the green button**. Macdows restores the App Shortcuts it managed. Reopen affected apps to reload their shortcuts.
 2. Choose **Quit Macdows** from the menu bar to restore the previous Globe/Fn mapping. If the icon is hidden, open Macdows from Applications to bring it back.
 3. Move Macdows from Applications to the Trash. For Homebrew installations, run `brew uninstall --cask katlianik/macdows/macdows`.
 4. To remove saved preferences, run `defaults delete local.redquit.utility` after quitting. You can revoke Macdows permissions in macOS Privacy settings under Accessibility, Automation and Screen Recording.

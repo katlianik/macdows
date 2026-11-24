@@ -2180,6 +2180,11 @@ static void sampleGreen(void) {
             CGPoint point = sample ? CGEventGetLocation(sample) : CGPointZero;
             AXUIElementRef hit = sample ? copyHit(point) : NULL;
             if (sample) CFRelease(sample);
+            pid_t hitPID = 0;
+            if (hit && AXUIElementGetPid(hit, &hitPID) == kAXErrorSuccess && hitPID == getpid()) {
+                CFRelease(hit);
+                hit = NULL;
+            }
             if (hit) {
                 AXUIElementSetMessagingTimeout(hit, 0.08);
                 id window = containingWindow(hit);
@@ -2234,6 +2239,8 @@ static CGEventRef mouseEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef
             CGPoint point = CGEventGetLocation(event);
             CGEventFlags mods = CGEventGetFlags(event);
             pid_t dest = (pid_t)CGEventGetIntegerValueField(event,kCGEventTargetUnixProcessID);
+            // The utility's own settings must receive normal AppKit clicks, including Close.
+            if (dest == getpid()) return event;
             GreenTarget *hover = hoverTarget;
             if (greenEnabled && hover && !((optionEnabled && (mods & kCGEventFlagMaskAlternate)) || (dragEnabled && dragChord(mods)))
                 && NSProcessInfo.processInfo.systemUptime-hover.time < 0.4 && CGRectContainsPoint(hover.bounds,point)
@@ -2245,6 +2252,11 @@ static CGEventRef mouseEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef
             }
             AXUIElementRef hit = copyHit(CGEventGetLocation(event));
             if (!hit) return event;
+            pid_t hitPID = 0;
+            if (AXUIElementGetPid(hit, &hitPID) == kAXErrorSuccess && hitPID == getpid()) {
+                CFRelease(hit);
+                return event;
+            }
             AXUIElementSetMessagingTimeout(hit, 0.08);
             CGEventFlags flags = CGEventGetFlags(event);
             if (dragEnabled && dragChord(flags) && beginDrag(hit, CGEventGetLocation(event))) {
@@ -2333,39 +2345,39 @@ typedef NS_ENUM(NSInteger, SwitcherScope) {
     SwitcherSystem, SwitcherThisDesktop, SwitcherAllDesktops
 };
 
-static NSMenu *settingsSection(NSMenu *root, NSString *title) {
-    NSMenuItem *row = [root addItemWithTitle:title action:nil keyEquivalent:@""];
-    NSMenu *section = [[NSMenu alloc] initWithTitle:title];
-    section.autoenablesItems = NO;
-    row.submenu = section;
-    return section;
-}
+#import "MacdowsSettings.h"
 
-static NSMenuItem *inactiveMenuItem(NSMenu *menu, NSString *title) {
-    NSMenuItem *caption = [menu addItemWithTitle:title action:nil keyEquivalent:@""];
-    caption.enabled = NO;
-    return caption;
-}
-
-static void addMenuHeading(NSMenu *menu, NSString *title) {
-    if (@available(macOS 14.0, *)) {
-        [menu addItem:[NSMenuItem sectionHeaderWithTitle:title]];
+static void storeSettingChoice(NSUserDefaults *prefs, NSString *key, NSInteger value) {
+    if ([key isEqualToString:@"scope"]) {
+        if (value < SwitcherSystem || value > SwitcherAllDesktops) return;
+        if (value != SwitcherSystem)
+            [prefs setBool:value == SwitcherThisDesktop forKey:localSwitcherCurrentOnlyKey];
+        [prefs setBool:value != SwitcherSystem forKey:localSwitcherKey];
+    } else if ([key isEqualToString:@"display"]) {
+        if (![prefs boolForKey:localSwitcherKey] || value < LocalSwitcherDisplayIcons || value > LocalSwitcherDisplayEveryWindow) return;
+        [prefs setBool:value != LocalSwitcherDisplayIcons forKey:localSwitcherPreviewsKey];
+        [prefs setBool:value == LocalSwitcherDisplayEveryWindow forKey:localSwitcherEveryWindowKey];
+    } else if ([key isEqualToString:@"redMode"]) {
+        if (value < 0 || value > 2) return;
+        if (value != 0) [prefs setBool:value == 1 forKey:lastKey];
+        [prefs setBool:value != 0 forKey:redKey];
+    } else if ([key isEqualToString:@"globe"]) {
+        if (value >= GlobeOff && value <= GlobeControl) [prefs setInteger:value forKey:globeModeKey];
     } else {
-        NSMenuItem *heading = inactiveMenuItem(menu,title);
-        NSFont *font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize weight:NSFontWeightSemibold];
-        heading.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{NSFontAttributeName:font}];
-        heading.accessibilityRole = NSAccessibilityStaticTextRole;
+        if ([key isEqualToString:backgroundKey] && ![prefs boolForKey:redKey]) return;
+        if ([key isEqualToString:localSwitcherHideFinderKey] &&
+            (![prefs boolForKey:localSwitcherKey] || [prefs boolForKey:localSwitcherCurrentOnlyKey])) return;
+        if (([key isEqualToString:snapKey] || [key isEqualToString:arrangeKey]) && !supportsTilingShortcuts()) return;
+        [prefs setBool:value != NSControlStateValueOff forKey:key];
     }
 }
 
 @interface Macdows : NSObject <NSApplicationDelegate, NSMenuDelegate>
 @property(strong) NSStatusItem *item;
-@property(strong) NSMenuItem *status, *loginItem, *loginSettings;
-@property(strong) NSMenuItem *redLast, *redBackground, *switcherFinder, *previewAccess;
-@property(strong) NSArray<NSMenuItem *> *scopeChoices, *displayChoices, *globeChoices;
-@property(strong) NSMenuItem *shiftShortcut, *spaceShortcut;
+@property(strong) NSMenuItem *status;
+@property(strong) MacdowsSettings *preferencesWindow;
 @property(copy) NSString *loginError, *statusText;
-@property(assign) BOOL previewAccessRequested, previewAccessWasAllowed, menuTracking;
+@property(assign) BOOL previewAccessRequested, previewAccessWasAllowed;
 @end
 
 @implementation Macdows
@@ -2450,137 +2462,112 @@ static void addMenuHeading(NSMenu *menu, NSString *title) {
     });
     startInputWatchdog();
 }
-- (NSArray<NSMenuItem *> *)choicesIn:(NSMenu *)menu titles:(NSArray<NSString *> *)titles action:(SEL)action {
-    NSMutableArray *rows = [NSMutableArray array];
-    for (NSString *title in titles) {
-        NSMenuItem *row = [menu addItemWithTitle:title action:action keyEquivalent:@""];
-        row.target = self;
-        row.tag = rows.count;
-        [rows addObject:row];
-    }
-    return rows;
-}
 - (NSMenu *)buildStatusMenu {
-    NSMenu *root = [NSMenu new];
-    root.autoenablesItems = NO;
-    root.delegate = self;
-    self.status = inactiveMenuItem(root,@"Macdows");
-    [root addItem:NSMenuItem.separatorItem];
-    NSMenuItem *(^toggle)(NSMenu *, NSString *, NSString *) = ^NSMenuItem *(NSMenu *section, NSString *key, NSString *label) {
-        NSMenuItem *row = [section addItemWithTitle:label action:@selector(toggle:) keyEquivalent:@""];
-        row.representedObject = key;
-        row.target = self;
-        row.state = [NSUserDefaults.standardUserDefaults boolForKey:key] ? NSControlStateValueOn : NSControlStateValueOff;
-        return row;
+    NSMenu *menu = [NSMenu new];
+    menu.autoenablesItems = NO;
+    menu.delegate = self;
+    self.status = [menu addItemWithTitle:@"Macdows" action:nil keyEquivalent:@""];
+    self.status.enabled = NO;
+    [menu addItem:NSMenuItem.separatorItem];
+    [menu addItemWithTitle:@"Settings…" action:@selector(showSettings:) keyEquivalent:@","].target = self;
+    [menu addItemWithTitle:@"Quit Macdows" action:@selector(terminate:) keyEquivalent:@"q"].target = NSApp;
+    return menu;
+}
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    self.status.title = self.statusText ?: @"Macdows";
+}
+- (void)prepareSettingsWindow {
+    if (self.preferencesWindow) return;
+    self.preferencesWindow = [MacdowsSettings new];
+    __weak Macdows *weakSelf = self;
+    self.preferencesWindow.onChange = ^(NSString *key, NSInteger value) {
+        [weakSelf changeSetting:key value:value];
     };
-
-    NSMenu *switcher = settingsSection(root,@"⌘Tab Switcher");
-    addMenuHeading(switcher,@"Switch with ⌘Tab");
-    self.scopeChoices = [self choicesIn:switcher titles:@[@"macOS · All Apps", @"Macdows · This Desktop", @"Macdows · All Desktops"] action:@selector(selectScope:)];
-    [switcher addItem:NSMenuItem.separatorItem];
-    addMenuHeading(switcher,@"Macdows appearance");
-    self.displayChoices = [self choicesIn:switcher titles:@[@"App Icons", @"One Preview per App", @"One Preview per Window"] action:@selector(selectSwitcherDisplay:)];
-    self.previewAccess = [switcher addItemWithTitle:@"Allow Screen Recording for Previews…" action:@selector(openPreviewAccess:) keyEquivalent:@""];
-    self.previewAccess.target = self;
-    self.previewAccess.indentationLevel = 1;
-    [switcher addItem:NSMenuItem.separatorItem];
-    addMenuHeading(switcher,@"Macdows filters");
-    self.switcherFinder = toggle(switcher,localSwitcherHideFinderKey,@"Hide Finder Without Windows");
-
-    NSMenu *windows = settingsSection(root,@"Windows & Desktops");
-    addMenuHeading(windows,@"Switch");
-    toggle(windows,cycleKey,@"Cycle App Windows  ·  ⌘`").toolTip = @"Uses the physical key above Tab in any keyboard layout. Add Shift to cycle backwards.";
-    toggle(windows,desktopKey,@"Switch Desktops  ·  ⌃⇧⌥←/→").toolTip = @"Release the shortcut to switch. Requires Automation access to System Events.";
-    [windows addItem:NSMenuItem.separatorItem];
-    addMenuHeading(windows,@"Move & resize");
-    NSMenuItem *snap = toggle(windows,snapKey,@"Tile Left or Right  ·  ⌃←/→");
-    snap.toolTip = @"Uses the standard desktop-switching keys for tiling. Requires macOS 15 or later.";
-    NSMenuItem *arrange = toggle(windows,arrangeKey,@"Arrange, Fill or Restore  ·  ⌃⌥Arrows");
-    arrange.toolTip = @"Left/right arranges two windows. Up fills the window. Down restores it. Requires macOS 15 or later.";
-    if (!supportsTilingShortcuts()) {
-        snap.enabled = arrange.enabled = NO;
-        snap.state = arrange.state = NSControlStateValueOff;
-    }
-    toggle(windows,dragKey,@"Move by Dragging Anywhere  ·  ⌃⌥Drag");
-
-    NSMenu *buttons = settingsSection(root,@"Window Buttons");
-    toggle(buttons,redKey,@"Red Button Quits the App");
-    self.redLast = toggle(buttons,lastKey,@"Only When Closing the Last Window");
-    self.redBackground = toggle(buttons,backgroundKey,@"Keep Menu-Bar and Background Apps Running");
-    self.redLast.indentationLevel = self.redBackground.indentationLevel = 1;
-    [buttons addItem:NSMenuItem.separatorItem];
-    toggle(buttons,greenKey,@"Green Button Fills or Restores the Window");
-    toggle(buttons,optionClickKey,@"Option-Click Acts on One Window").toolTip = @"Option-click a Macdows red or green button, or the yellow minimize button, to perform its normal action on one window.";
-
-    NSMenu *activation = settingsSection(root,@"When Activating an App");
-    toggle(activation,restoreKey,@"Restore One Window if All Are Minimized");
-    [activation addItem:NSMenuItem.separatorItem];
-    addMenuHeading(activation,@"Open a window if none exist");
-    toggle(activation,finderKey,@"In Finder");
-    toggle(activation,otherAppsKey,@"In Other Apps");
-
-    NSMenu *language = settingsSection(root,@"Globe Key & Language");
-    addMenuHeading(language,@"Use Globe / Fn as");
-    self.globeChoices = [self choicesIn:language titles:@[@"Standard Globe / Fn", @"Option ⌥", @"Command ⌘", @"Control ⌃"] action:@selector(selectGlobe:)];
-    [language addItem:NSMenuItem.separatorItem];
-    addMenuHeading(language,@"Switch keyboard layouts");
-    self.shiftShortcut = toggle(language,globeShiftKey,@"Globe + Shift");
-    self.spaceShortcut = toggle(language,languageKey,@"Option + Space");
-    [root addItem:NSMenuItem.separatorItem];
-    toggle(root,fileCutKey,@"Move Files in Finder  ·  ⌘X / ⌘V");
-
-    NSMenu *general = settingsSection(root,@"General");
-    if (@available(macOS 13.0, *)) {
-        self.loginItem = [general addItemWithTitle:@"Launch at Login" action:@selector(toggleLogin:) keyEquivalent:@""];
-        self.loginItem.target = self;
-        self.loginSettings = [general addItemWithTitle:@"Login Items Settings…" action:@selector(openLoginSettings:) keyEquivalent:@""];
-        self.loginSettings.target = self;
+    [self syncSettings];
+}
+- (void)showSettings:(id)sender {
+    [self prepareSettingsWindow];
+    [self syncSettings];
+    [self.preferencesWindow showSettings];
+}
+- (void)changeSetting:(NSString *)key value:(NSInteger)value {
+    if (!self.preferencesWindow.controls[key].enabled) return;
+    if ([key isEqualToString:@"previewAccess"]) {
+        [self openPreviewAccess:nil];
+    } else if ([key isEqualToString:@"login"]) {
+        if (@available(macOS 13.0, *)) [self toggleLogin:nil];
+    } else if ([key isEqualToString:@"loginSettings"]) {
+        if (@available(macOS 13.0, *)) [SMAppService openSystemSettingsLoginItems];
+    } else if ([key isEqualToString:@"accessibility"]) {
+        [self settings:nil];
+    } else if ([key isEqualToString:@"website"]) {
+        [self openWebsite:nil];
+    } else if ([key isEqualToString:@"menuIcon"]) {
+        self.item.visible = value != 0;
+        [NSUserDefaults.standardUserDefaults setBool:!self.item.visible forKey:hideIconKey];
     } else {
-        inactiveMenuItem(general,@"Launch at Login (macOS 13+)");
-        inactiveMenuItem(general,@"Login Items Settings…");
+        [self saveSetting:key value:value];
     }
-    NSMenuItem *hide = [general addItemWithTitle:@"Hide Menu Bar Icon" action:@selector(hideMenuIcon:) keyEquivalent:@""];
-    hide.target = self;
-    hide.toolTip = @"Open Macdows again to show its icon.";
-    [general addItemWithTitle:@"Accessibility Settings…" action:@selector(settings:) keyEquivalent:@""].target = self;
-    [general addItemWithTitle:@"Macdows Website" action:@selector(openWebsite:) keyEquivalent:@""].target = self;
-    [root addItemWithTitle:@"Quit Macdows" action:@selector(terminate:) keyEquivalent:@"q"].target = NSApp;
-    [self syncMenuChoices];
-    return root;
+    [self syncSettings];
 }
-- (void)syncMenuChoices {
-    SwitcherScope scope = SwitcherSystem;
-    if (localSwitcherEnabled) scope = localSwitcherCurrentOnly ? SwitcherThisDesktop : SwitcherAllDesktops;
-    for (NSMenuItem *row in self.scopeChoices) row.state = row.tag == scope;
-    LocalSwitcherDisplayMode display = localSwitcherDisplayMode(localSwitcherPreviews,localSwitcherEveryWindow);
-    for (NSMenuItem *row in self.displayChoices) {
-        row.state = localSwitcherEnabled && row.tag == display;
-        row.enabled = localSwitcherEnabled;
-    }
-    self.switcherFinder.enabled = scope == SwitcherAllDesktops;
-    self.switcherFinder.state = localSwitcherEnabled && (localSwitcherCurrentOnly || localSwitcherHideFinder);
-    self.switcherFinder.toolTip = scope == SwitcherThisDesktop ? @"This desktop already excludes every app that has no windows here." : @"Available in Macdows · All Desktops.";
-    BOOL needsCapture = localSwitcherEnabled && localSwitcherPreviews;
-    self.previewAccess.enabled = needsCapture && !self.previewAccessWasAllowed;
-    self.previewAccess.title = !needsCapture ? @"Screen Recording (for previews)" : self.previewAccessWasAllowed ? @"Screen Recording Granted" : @"Allow Screen Recording…";
-    self.redLast.enabled = self.redBackground.enabled = redEnabled;
-    self.redLast.state = redEnabled && lastEnabled;
-    self.redBackground.state = redEnabled && backgroundEnabled;
-    for (NSMenuItem *row in self.globeChoices) row.state = row.tag == globeMode;
-    NSString *modifier = @[@"Globe",@"Option",@"Command",@"Control"][globeMode];
-    self.shiftShortcut.title = globeMode == GlobeOff ? @"Globe + Shift" :
-        [NSString stringWithFormat:@"Globe + Shift or %@ + Shift",modifier];
-    self.spaceShortcut.title = globeMode == GlobeControl ? @"(Globe, Option or Control) + Space" :
-        globeMode == GlobeCommand ? @"Option + Space" : @"Globe + Space or Option + Space";
-}
-- (void)selectScope:(NSMenuItem *)choice {
-    NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
-    BOOL custom = choice.tag != SwitcherSystem;
-    if (custom) [prefs setBool:choice.tag == SwitcherThisDesktop forKey:localSwitcherCurrentOnlyKey];
-    [prefs setBool:custom forKey:localSwitcherKey];
+- (void)saveSetting:(NSString *)key value:(NSInteger)value {
+    storeSettingChoice(NSUserDefaults.standardUserDefaults,key,value);
     [self loadPreferences];
+    inputRetryCount = 0;
+    inputRetryAfter = 0;
+    resumeInput();
     [self refresh];
-    if (custom) [self ensurePreviewAccessIfNeeded:YES];
+    if ([key isEqualToString:@"scope"] || [key isEqualToString:@"display"])
+        [self ensurePreviewAccessIfNeeded:YES];
+}
+- (void)syncSettings {
+    if (!self.preferencesWindow) return;
+    NSDictionary<NSString *, NSControl *> *controls = self.preferencesWindow.controls;
+    NSDictionary<NSString *, NSTextField *> *notes = self.preferencesWindow.notes;
+    NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
+    for (NSString *key in @[cycleKey, desktopKey, snapKey, arrangeKey, dragKey, greenKey, optionClickKey,
+                            backgroundKey, restoreKey, finderKey, otherAppsKey, fileCutKey, globeShiftKey, languageKey])
+        [(NSButton *)controls[key] setState:[prefs boolForKey:key] ? NSControlStateValueOn : NSControlStateValueOff];
+
+    NSInteger scope = localSwitcherEnabled ? (localSwitcherCurrentOnly ? SwitcherThisDesktop : SwitcherAllDesktops) : SwitcherSystem;
+    [(NSPopUpButton *)controls[@"scope"] selectItemAtIndex:scope];
+    [(NSPopUpButton *)controls[@"display"] selectItemAtIndex:localSwitcherDisplayMode(localSwitcherPreviews,localSwitcherEveryWindow)];
+    controls[@"display"].enabled = localSwitcherEnabled;
+    notes[@"switcher"].stringValue = scope == SwitcherSystem ? @"Choose a Macdows mode to use previews and filters." :
+        (scope == SwitcherThisDesktop ? @"Only apps with a window on this desktop appear." : @"Includes apps across all your desktops.");
+    controls[localSwitcherHideFinderKey].enabled = scope == SwitcherAllDesktops;
+    [(NSButton *)controls[localSwitcherHideFinderKey] setState:(scope == SwitcherThisDesktop || localSwitcherHideFinder)];
+    notes[@"finder"].stringValue = @"Finder is always hidden when it has no window on this desktop.";
+    notes[@"finder"].hidden = scope != SwitcherThisDesktop;
+    BOOL previews = localSwitcherEnabled && localSwitcherPreviews;
+    controls[@"previewAccess"].enabled = previews && !self.previewAccessWasAllowed;
+    notes[@"preview"].stringValue = !previews ? @"Required only for previews." :
+        (self.previewAccessWasAllowed ? @"Screen Recording access is granted." : @"Allow Screen Recording to see window previews.");
+    [(NSPopUpButton *)controls[@"redMode"] selectItemAtIndex:redEnabled ? (lastEnabled ? 1 : 2) : 0];
+    controls[backgroundKey].enabled = redEnabled;
+    notes[@"red"].stringValue = redEnabled ? @"Finder always keeps running." : @"Exceptions apply when the red button quits apps.";
+    controls[snapKey].enabled = controls[arrangeKey].enabled = supportsTilingShortcuts();
+    [(NSPopUpButton *)controls[@"globe"] selectItemAtIndex:globeMode];
+    NSString *modifier = @[@"Globe", @"Option", @"Command", @"Control"][globeMode];
+    NSString *shift = globeMode == GlobeOff ? @"Globe + Shift" : [NSString stringWithFormat:@"Globe + Shift or %@ + Shift",modifier];
+    NSString *space = globeMode == GlobeControl ? @"Globe, Option or Control + Space" :
+        (globeMode == GlobeCommand ? @"Option + Space" : @"Globe + Space or Option + Space");
+    [(NSButton *)controls[globeShiftKey] setTitle:shift];
+    [(NSButton *)controls[languageKey] setTitle:space];
+    [(NSButton *)controls[@"menuIcon"] setState:self.item.visible];
+    notes[@"accessibility"].stringValue = AXIsProcessTrusted() ? @"Accessibility access is granted." : @"Allow Accessibility to control windows and shortcuts.";
+    if (@available(macOS 13.0, *)) {
+        SMAppServiceStatus loginStatus = SMAppService.mainAppService.status;
+        BOOL pending = loginStatus == SMAppServiceStatusRequiresApproval;
+        NSButton *login = (NSButton *)controls[@"login"];
+        login.allowsMixedState = pending;
+        login.state = pending ? NSControlStateValueMixed : loginStatus == SMAppServiceStatusEnabled;
+        notes[@"login"].stringValue = pending ? @"Approve Macdows in Login Items." : self.loginError ?: @"";
+        notes[@"login"].hidden = !pending && !self.loginError.length;
+    } else {
+        controls[@"login"].enabled = controls[@"loginSettings"].enabled = NO;
+        notes[@"login"].stringValue = @"Launch at login requires macOS 13 or later.";
+    }
 }
 - (void)ensurePreviewAccessIfNeeded:(BOOL)request {
     BOOL needsPreviewAccess = localSwitcherEnabled && localSwitcherPreviews;
@@ -2599,41 +2586,6 @@ static void addMenuHeading(NSMenu *menu, NSString *title) {
     }
     [self refresh];
 }
-- (void)selectSwitcherDisplay:(NSMenuItem *)choice {
-    LocalSwitcherDisplayMode mode = (LocalSwitcherDisplayMode)choice.tag;
-    NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
-    [prefs setBool:mode != LocalSwitcherDisplayIcons forKey:localSwitcherPreviewsKey];
-    [prefs setBool:mode == LocalSwitcherDisplayEveryWindow forKey:localSwitcherEveryWindowKey];
-    [self loadPreferences];
-    [self ensurePreviewAccessIfNeeded:YES];
-}
-- (void)updateLoginMenu API_AVAILABLE(macos(13.0)) {
-    SMAppServiceStatus status = SMAppService.mainAppService.status;
-    BOOL enabled = status == SMAppServiceStatusEnabled;
-    BOOL pending = status == SMAppServiceStatusRequiresApproval;
-    self.loginItem.state = enabled ? NSControlStateValueOn : pending ? NSControlStateValueMixed : NSControlStateValueOff;
-    self.loginItem.title = pending ? @"Launch at Login · Approval Needed" : self.loginError && !enabled ? @"Launch at Login · Retry" : @"Launch at Login";
-    self.loginItem.toolTip = self.loginError;
-    self.loginSettings.enabled = YES;
-}
-// Freeze one snapshot while AppKit tracks the root and its single-level submenus.
-- (void)menuNeedsUpdate:(NSMenu *)menu {
-    if (self.menuTracking) return;
-    self.status.title = self.statusText ?: @"Macdows";
-    [self syncMenuChoices];
-    if (@available(macOS 13.0, *)) [self updateLoginMenu];
-}
-- (void)menuWillOpen:(NSMenu *)menu { self.menuTracking = YES; }
-- (void)menuDidClose:(NSMenu *)menu {
-    self.menuTracking = NO;
-    // Selection actions can be delivered just after tracking ends.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!self.menuTracking) [self syncMenuChoices];
-    });
-}
-- (void)openLoginSettings:(id)sender API_AVAILABLE(macos(13.0)) {
-    [SMAppService openSystemSettingsLoginItems];
-}
 - (void)toggleLogin:(id)sender API_AVAILABLE(macos(13.0)) {
     SMAppService *service = SMAppService.mainAppService;
     NSError *error = nil;
@@ -2642,7 +2594,6 @@ static void addMenuHeading(NSMenu *menu, NSString *title) {
     self.loginError = success ? nil : error.localizedDescription;
     if (success || service.status == SMAppServiceStatusRequiresApproval)
         [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"DidConfigureLaunchAtLogin"];
-    [self updateLoginMenu];
     if (!success && error && service.status != SMAppServiceStatusRequiresApproval) {
         [[NSAlert alertWithError:error] runModal];
     }
@@ -2695,24 +2646,8 @@ static void addMenuHeading(NSMenu *menu, NSString *title) {
     }
     syncKeyboards(globeMode);
     BOOL previewMissing = localSwitcherEnabled && localSwitcherPreviews && !previewAllowed;
-    self.statusText = paused ? @"Input paused after a slow response · recovering automatically" : !allowed ? @"Macdows 1.35 needs Accessibility access" : !tap ? @"Mouse access unavailable · reopen Macdows" : (snapEnabled || arrangeEnabled || desktopEnabled || cycleEnabled || fileCutEnabled || languageEnabled || globeShiftEnabled || windowSwitchEnabled() || localSwitcherEnabled || globeMode != GlobeOff) && !globeTap ? @"Keyboard access unavailable · reopen Macdows" : previewMissing ? @"Window previews need Screen Recording access" : (!snapEnabled && !arrangeEnabled && !desktopEnabled && !cycleEnabled && !redEnabled && !greenEnabled && globeMode == GlobeOff && !optionEnabled && !dragEnabled && !restoreEnabled && !windowSwitchEnabled() && !localSwitcherEnabled && !fileCutEnabled && !languageEnabled && !globeShiftEnabled) ? @"All switches off" : @"Macdows 1.35 is active";
-}
-- (void)toggle:(NSMenuItem *)item {
-    BOOL enabled = item.state != NSControlStateValueOn;
-    item.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
-    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:item.representedObject];
-    [self loadPreferences];
-    inputRetryCount = 0; inputRetryAfter = 0;
-    resumeInput();
-    [self refresh];
-}
-- (void)selectGlobe:(NSMenuItem *)choice {
-    shiftPending = NO; shiftBlocked = NO;
-    globeMode = (GlobeMode)choice.tag;
-    [NSUserDefaults.standardUserDefaults setInteger:globeMode forKey:globeModeKey];
-    inputRetryCount = 0; inputRetryAfter = 0;
-    resumeInput();
-    [self refresh];
+    self.statusText = paused ? @"Input paused after a slow response · recovering automatically" : !allowed ? @"Macdows 1.35 needs Accessibility access" : !tap ? @"Mouse access unavailable · reopen Macdows" : (snapEnabled || arrangeEnabled || desktopEnabled || cycleEnabled || fileCutEnabled || languageEnabled || globeShiftEnabled || windowSwitchEnabled() || localSwitcherEnabled || globeMode != GlobeOff) && !globeTap ? @"Keyboard access unavailable · reopen Macdows" : previewMissing ? @"Window previews need Screen Recording access" : (!snapEnabled && !arrangeEnabled && !desktopEnabled && !cycleEnabled && !redEnabled && !greenEnabled && globeMode == GlobeOff && !optionEnabled && !dragEnabled && !restoreEnabled && !windowSwitchEnabled() && !localSwitcherEnabled && !fileCutEnabled && !languageEnabled && !globeShiftEnabled) ? @"All features are off" : @"Macdows is active";
+    if (self.preferencesWindow.window.visible) [self syncSettings];
 }
 - (void)loadPreferences {
     NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
@@ -2748,15 +2683,12 @@ static void addMenuHeading(NSMenu *menu, NSString *title) {
     if (!windowSwitchEnabled()) switchGeneration++;
     configureNativeBindings(snapEnabled || arrangeEnabled || greenEnabled);
 }
-- (void)hideMenuIcon:(id)sender {
-    [NSUserDefaults.standardUserDefaults setBool:YES forKey:hideIconKey];
-    self.item.visible = NO;
-}
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)hasWindows {
     if (self.item && !self.item.visible) {
         [NSUserDefaults.standardUserDefaults setBool:NO forKey:hideIconKey];
         self.item.visible = YES;
     }
+    [self showSettings:nil];
     return YES;
 }
 - (void)openWebsite:(id)sender {
