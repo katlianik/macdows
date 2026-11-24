@@ -1,5 +1,10 @@
 # Macdows release notes
 
+## 1.35 build 74 · 2026-11-24
+
+- Menu sections use distinct headings so unavailable commands are easier to spot. All settings remain within one submenu.
+- On macOS 11–14, the status and keyboard handler now ignore tiling shortcuts that require macOS 15.
+
 ## 1.35 build 73 · 2026-11-24
 
 - Pick the ⌘Tab switcher and desktop scope in one step. Choose macOS for all apps, or Macdows for this desktop or all desktops.

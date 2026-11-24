@@ -3,7 +3,7 @@
 Free macOS menu-bar utility by Astonio Ltd. Globe+Shift language switching, red-button quit, green-button maximize and restore, and cut-and-move in Finder.
 
 - Publisher: Astonio Ltd (https://astonio.com).
-- Version: 1.35 (build 73).
+- Version: 1.35 (build 74).
 - Optional Macdows Command-Tab switcher can show every real window on the current desktop as a separate preview with its title, hide Finder when it has no windows, and show hidden-item counts at the edges. It is disabled by default. While the panel is open, Command-W closes the selected window and Command-Q quits the selected app; for Finder, Command-Q closes all Finder windows.
 - Control-Shift-Option-Left/Right switches to the adjacent macOS desktop after the keys are released. Globe/Fn can be used instead of Control when Macdows maps Globe/Fn to Control.
 - Command-Grave cycles through the current app’s standard windows in either direction, including across the last/first boundary. Add Shift to go backwards. The shortcut uses the physical key across keyboard layouts.
@@ -18,6 +18,7 @@ Free macOS menu-bar utility by Astonio Ltd. Globe+Shift language switching, red-
 
 ## Release notes
 
+- **1.35 build 74, 24 November 2026.** Menu section headings are visually distinct from unavailable commands. On macOS 11–14, unavailable tiling shortcuts no longer count as active.
 - **1.35 build 73, 24 November 2026.** Switcher mode and desktop scope are chosen together. Dependent settings stay visible in gray within one submenu level. Preview modes check Screen Recording access on startup.
 - **1.35 build 70, 24 November 2026.** Added per-window titled previews, edge counts and preview preloading.
 
@@ -59,7 +60,7 @@ In Command mode, Globe-Space follows macOS Command-Space. Input source switching
 4. Enable Accessibility / Device Control permission for the installed copy, then reopen it.
 5. Allow Automation access to Finder for the empty-Finder feature and to System Events for desktop switching when prompted.
 
-[Install with Homebrew](https://github.com/katlianik/macdows#install-with-homebrew)
+[Install with Homebrew](https://github.com/katlianik/macdows#install-with-homebrew) · [Uninstall Macdows](https://github.com/katlianik/macdows#remove-macdows)
 
 ## Common questions
 

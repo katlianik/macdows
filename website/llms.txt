@@ -6,7 +6,7 @@ Macdows 1.35 supports macOS 11 or later on Apple silicon and Intel Macs. It is f
 
 ## Product information
 
-- [Release notes for the current build 73](https://astonio.com/lab/macdows/#updates)
+- [Release notes for the current build 74](https://astonio.com/lab/macdows/index.html#updates)
 - [GitHub repository and releases](https://github.com/katlianik/macdows)
 
 - [Features, shortcut modes, requirements, pricing and installation](https://astonio.com/lab/macdows/index.md)

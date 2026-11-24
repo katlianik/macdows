@@ -24,11 +24,23 @@ static void testStatusMenu(void) {
  Macdows *controller = [Macdows new];
  NSMenu *root = [controller buildStatusMenu];
  assert(!root.autoenablesItems);
+ NSMutableSet *headings = [NSMutableSet set];
  for (NSMenuItem *section in root.itemArray) {
      if (!section.submenu) continue;
      assert(!section.submenu.autoenablesItems);
-     for (NSMenuItem *row in section.submenu.itemArray) assert(!row.hasSubmenu && !row.hidden);
+     for (NSMenuItem *row in section.submenu.itemArray) {
+         assert(!row.hasSubmenu && !row.hidden);
+         if (@available(macOS 14.0, *)) {
+             if (row.isSectionHeader) [headings addObject:row.title];
+         } else if (row.attributedTitle.length && !row.action && !row.enabled) {
+             [headings addObject:row.title];
+         }
+     }
  }
+ NSSet *expectedHeadings = [NSSet setWithArray:@[@"Switch with ⌘Tab", @"Macdows appearance", @"Macdows filters",
+     @"Switch", @"Move & resize", @"Open a window if none exist", @"Use Globe / Fn as", @"Switch keyboard layouts"]];
+ assert([headings isEqualToSet:expectedHeadings]);
+ assert(!controller.status.enabled && !controller.status.action);
  localSwitcherEnabled = NO;
  localSwitcherCurrentOnly = localSwitcherHideFinder = localSwitcherPreviews = YES;
  redEnabled = NO;
@@ -57,8 +69,23 @@ static void testStatusMenu(void) {
  assert(!controller.previewAccess.enabled && !controller.previewAccess.hidden);
  puts("PASS: one submenu level, persistent rows, dependent controls, permission states and tracking");
 }
+static void testTilingAvailability(void) {
+ NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:@"local.macdows.tests.tiling"];
+ [prefs setVolatileDomain:@{snapKey:@YES, arrangeKey:@YES} forName:NSArgumentDomain];
+ loadTilingShortcuts(prefs,NO);
+ assert(!snapEnabled && !arrangeEnabled);
+ assert([prefs boolForKey:snapKey] && [prefs boolForKey:arrangeKey]);
+ loadTilingShortcuts(prefs,YES);
+ assert(snapEnabled && arrangeEnabled);
+ [prefs setVolatileDomain:@{snapKey:@NO, arrangeKey:@YES} forName:NSArgumentDomain];
+ loadTilingShortcuts(prefs,YES);
+ assert(!snapEnabled && arrangeEnabled);
+ [prefs removeVolatileDomainForName:NSArgumentDomain];
+ puts("PASS: unsupported tiling shortcuts stay inactive and preserve their saved choices");
+}
 int main(void) { @autoreleasepool {
  testStatusMenu();
+ testTilingAvailability();
  localSwitcherEnabled=YES;
  assert(localSwitcherDisplayMode(NO,NO)==LocalSwitcherDisplayIcons);
  assert(localSwitcherDisplayMode(YES,NO)==LocalSwitcherDisplayAppPreviews);

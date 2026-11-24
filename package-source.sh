@@ -30,6 +30,8 @@ else
     cp "$project_dir/README.md" "$stage_dir/README.md"
 fi
 cp "$project_dir/package-source.sh" "$project_dir/CHANGELOG.md" "$stage_dir/"
+mkdir -p "$stage_dir/website"
+cp "$project_dir/website/window-switcher.gif" "$stage_dir/website/"
 
 /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$stage_dir" "$scratch/source.zip"
 mv -f "$scratch/source.zip" "$archive_path"

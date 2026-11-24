@@ -1172,6 +1172,14 @@ static NSString *const snapKey = @"ControlArrowsSnap";
 static NSString *const arrangeKey = @"ControlOptionArrowsArrange";
 static NSString *const desktopKey = @"ControlShiftOptionArrowsDesktops";
 static BOOL snapEnabled, arrangeEnabled, desktopEnabled;
+static BOOL supportsTilingShortcuts(void) {
+    if (@available(macOS 15.0, *)) return YES;
+    return NO;
+}
+static void loadTilingShortcuts(NSUserDefaults *prefs, BOOL supported) {
+    snapEnabled = supported && [prefs boolForKey:snapKey];
+    arrangeEnabled = supported && [prefs boolForKey:arrangeKey];
+}
 static BOOL arrowConsumed[4];
 static BOOL arrowArrange[4];
 static BOOL desktopArrowConsumed[2];
@@ -2333,10 +2341,21 @@ static NSMenu *settingsSection(NSMenu *root, NSString *title) {
     return section;
 }
 
-static NSMenuItem *menuCaption(NSMenu *menu, NSString *title) {
+static NSMenuItem *inactiveMenuItem(NSMenu *menu, NSString *title) {
     NSMenuItem *caption = [menu addItemWithTitle:title action:nil keyEquivalent:@""];
     caption.enabled = NO;
     return caption;
+}
+
+static void addMenuHeading(NSMenu *menu, NSString *title) {
+    if (@available(macOS 14.0, *)) {
+        [menu addItem:[NSMenuItem sectionHeaderWithTitle:title]];
+    } else {
+        NSMenuItem *heading = inactiveMenuItem(menu,title);
+        NSFont *font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize weight:NSFontWeightSemibold];
+        heading.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{NSFontAttributeName:font}];
+        heading.accessibilityRole = NSAccessibilityStaticTextRole;
+    }
 }
 
 @interface Macdows : NSObject <NSApplicationDelegate, NSMenuDelegate>
@@ -2445,7 +2464,7 @@ static NSMenuItem *menuCaption(NSMenu *menu, NSString *title) {
     NSMenu *root = [NSMenu new];
     root.autoenablesItems = NO;
     root.delegate = self;
-    self.status = menuCaption(root,@"Macdows");
+    self.status = inactiveMenuItem(root,@"Macdows");
     [root addItem:NSMenuItem.separatorItem];
     NSMenuItem *(^toggle)(NSMenu *, NSString *, NSString *) = ^NSMenuItem *(NSMenu *section, NSString *key, NSString *label) {
         NSMenuItem *row = [section addItemWithTitle:label action:@selector(toggle:) keyEquivalent:@""];
@@ -2456,29 +2475,29 @@ static NSMenuItem *menuCaption(NSMenu *menu, NSString *title) {
     };
 
     NSMenu *switcher = settingsSection(root,@"⌘Tab Switcher");
-    menuCaption(switcher,@"Switch with ⌘Tab");
+    addMenuHeading(switcher,@"Switch with ⌘Tab");
     self.scopeChoices = [self choicesIn:switcher titles:@[@"macOS · All Apps", @"Macdows · This Desktop", @"Macdows · All Desktops"] action:@selector(selectScope:)];
     [switcher addItem:NSMenuItem.separatorItem];
-    menuCaption(switcher,@"Macdows appearance");
+    addMenuHeading(switcher,@"Macdows appearance");
     self.displayChoices = [self choicesIn:switcher titles:@[@"App Icons", @"One Preview per App", @"One Preview per Window"] action:@selector(selectSwitcherDisplay:)];
     self.previewAccess = [switcher addItemWithTitle:@"Allow Screen Recording for Previews…" action:@selector(openPreviewAccess:) keyEquivalent:@""];
     self.previewAccess.target = self;
     self.previewAccess.indentationLevel = 1;
     [switcher addItem:NSMenuItem.separatorItem];
-    menuCaption(switcher,@"Macdows filters");
+    addMenuHeading(switcher,@"Macdows filters");
     self.switcherFinder = toggle(switcher,localSwitcherHideFinderKey,@"Hide Finder Without Windows");
 
     NSMenu *windows = settingsSection(root,@"Windows & Desktops");
-    menuCaption(windows,@"Switch");
+    addMenuHeading(windows,@"Switch");
     toggle(windows,cycleKey,@"Cycle App Windows  ·  ⌘`").toolTip = @"Uses the physical key above Tab in any keyboard layout. Add Shift to cycle backwards.";
     toggle(windows,desktopKey,@"Switch Desktops  ·  ⌃⇧⌥←/→").toolTip = @"Release the shortcut to switch. Requires Automation access to System Events.";
     [windows addItem:NSMenuItem.separatorItem];
-    menuCaption(windows,@"Move & resize");
+    addMenuHeading(windows,@"Move & resize");
     NSMenuItem *snap = toggle(windows,snapKey,@"Tile Left or Right  ·  ⌃←/→");
     snap.toolTip = @"Uses the standard desktop-switching keys for tiling. Requires macOS 15 or later.";
     NSMenuItem *arrange = toggle(windows,arrangeKey,@"Arrange, Fill or Restore  ·  ⌃⌥Arrows");
     arrange.toolTip = @"Left/right arranges two windows. Up fills the window. Down restores it. Requires macOS 15 or later.";
-    if (@available(macOS 15.0, *)) {} else {
+    if (!supportsTilingShortcuts()) {
         snap.enabled = arrange.enabled = NO;
         snap.state = arrange.state = NSControlStateValueOff;
     }
@@ -2491,20 +2510,20 @@ static NSMenuItem *menuCaption(NSMenu *menu, NSString *title) {
     self.redLast.indentationLevel = self.redBackground.indentationLevel = 1;
     [buttons addItem:NSMenuItem.separatorItem];
     toggle(buttons,greenKey,@"Green Button Fills or Restores the Window");
-    toggle(buttons,optionClickKey,@"Option-Click Acts on One Window");
+    toggle(buttons,optionClickKey,@"Option-Click Acts on One Window").toolTip = @"Option-click a Macdows red or green button, or the yellow minimize button, to perform its normal action on one window.";
 
     NSMenu *activation = settingsSection(root,@"When Activating an App");
     toggle(activation,restoreKey,@"Restore One Window if All Are Minimized");
     [activation addItem:NSMenuItem.separatorItem];
-    menuCaption(activation,@"Open a window if none exist");
+    addMenuHeading(activation,@"Open a window if none exist");
     toggle(activation,finderKey,@"In Finder");
     toggle(activation,otherAppsKey,@"In Other Apps");
 
     NSMenu *language = settingsSection(root,@"Globe Key & Language");
-    menuCaption(language,@"Use Globe / Fn as");
+    addMenuHeading(language,@"Use Globe / Fn as");
     self.globeChoices = [self choicesIn:language titles:@[@"Standard Globe / Fn", @"Option ⌥", @"Command ⌘", @"Control ⌃"] action:@selector(selectGlobe:)];
     [language addItem:NSMenuItem.separatorItem];
-    menuCaption(language,@"Switch Keyboard Language");
+    addMenuHeading(language,@"Switch keyboard layouts");
     self.shiftShortcut = toggle(language,globeShiftKey,@"Globe + Shift");
     self.spaceShortcut = toggle(language,languageKey,@"Option + Space");
     [root addItem:NSMenuItem.separatorItem];
@@ -2517,14 +2536,14 @@ static NSMenuItem *menuCaption(NSMenu *menu, NSString *title) {
         self.loginSettings = [general addItemWithTitle:@"Login Items Settings…" action:@selector(openLoginSettings:) keyEquivalent:@""];
         self.loginSettings.target = self;
     } else {
-        menuCaption(general,@"Launch at Login (macOS 13+)");
-        menuCaption(general,@"Login Items Settings…");
+        inactiveMenuItem(general,@"Launch at Login (macOS 13+)");
+        inactiveMenuItem(general,@"Login Items Settings…");
     }
     NSMenuItem *hide = [general addItemWithTitle:@"Hide Menu Bar Icon" action:@selector(hideMenuIcon:) keyEquivalent:@""];
     hide.target = self;
     hide.toolTip = @"Open Macdows again to show its icon.";
     [general addItemWithTitle:@"Accessibility Settings…" action:@selector(settings:) keyEquivalent:@""].target = self;
-    [general addItemWithTitle:@"Astonio Website…" action:@selector(openAstonio:) keyEquivalent:@""].target = self;
+    [general addItemWithTitle:@"Macdows Website" action:@selector(openWebsite:) keyEquivalent:@""].target = self;
     [root addItemWithTitle:@"Quit Macdows" action:@selector(terminate:) keyEquivalent:@"q"].target = NSApp;
     [self syncMenuChoices];
     return root;
@@ -2550,9 +2569,9 @@ static NSMenuItem *menuCaption(NSMenu *menu, NSString *title) {
     for (NSMenuItem *row in self.globeChoices) row.state = row.tag == globeMode;
     NSString *modifier = @[@"Globe",@"Option",@"Command",@"Control"][globeMode];
     self.shiftShortcut.title = globeMode == GlobeOff ? @"Globe + Shift" :
-        [NSString stringWithFormat:@"Globe or %@ + Shift",modifier];
-    self.spaceShortcut.title = globeMode == GlobeControl ? @"Globe / Option / Control + Space" :
-        globeMode == GlobeCommand ? @"Option + Space" : @"Globe / Option + Space";
+        [NSString stringWithFormat:@"Globe + Shift or %@ + Shift",modifier];
+    self.spaceShortcut.title = globeMode == GlobeControl ? @"(Globe, Option or Control) + Space" :
+        globeMode == GlobeCommand ? @"Option + Space" : @"Globe + Space or Option + Space";
 }
 - (void)selectScope:(NSMenuItem *)choice {
     NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
@@ -2699,8 +2718,7 @@ static NSMenuItem *menuCaption(NSMenu *menu, NSString *title) {
     NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
     globeShiftEnabled = [prefs boolForKey:globeShiftKey];
     shiftPending = NO; shiftBlocked = NO;
-    snapEnabled = [prefs boolForKey:snapKey];
-    arrangeEnabled = [prefs boolForKey:arrangeKey];
+    loadTilingShortcuts(prefs,supportsTilingShortcuts());
     desktopEnabled = [prefs boolForKey:desktopKey];
     cycleEnabled = [prefs boolForKey:cycleKey];
     languageEnabled = [prefs boolForKey:languageKey];
@@ -2741,8 +2759,8 @@ static NSMenuItem *menuCaption(NSMenu *menu, NSString *title) {
     }
     return YES;
 }
-- (void)openAstonio:(id)sender {
-    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://astonio.com"]];
+- (void)openWebsite:(id)sender {
+    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://astonio.com/lab/macdows/index.html"]];
 }
 - (void)settings:(id)sender {
     [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]];
