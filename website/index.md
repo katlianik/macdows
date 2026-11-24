@@ -59,6 +59,8 @@ In Command mode, Globe-Space follows macOS Command-Space. Input source switching
 4. Enable Accessibility / Device Control permission for the installed copy, then reopen it.
 5. Allow Automation access to Finder for the empty-Finder feature and to System Events for desktop switching when prompted.
 
+[Install with Homebrew](https://github.com/katlianik/macdows#install-with-homebrew)
+
 ## Common questions
 
 ### What is Macdows?

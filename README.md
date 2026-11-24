@@ -14,6 +14,17 @@ Other features include Globe/Fn language shortcuts, optional red-click quit and 
 
 For a bug report, include your macOS version, Macdows build, relevant menu choices, and the shortest steps that reproduce the issue.
 
+## Install with Homebrew
+
+If you use Homebrew, add the project’s tap and install the cask:
+
+```sh
+brew tap katlianik/macdows https://github.com/katlianik/macdows
+brew install --cask katlianik/macdows/macdows
+```
+
+For later releases, run `brew update` and `brew upgrade --cask katlianik/macdows/macdows`.
+
 ## Requirements
 
 - macOS with Xcode 27 or later
